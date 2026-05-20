@@ -1,0 +1,11 @@
+[package]
+name = "galax-io"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+galax-core = { path = "../galax-core" }
+thiserror = "2"
+
+[dev-dependencies]
+fastrand = "2"

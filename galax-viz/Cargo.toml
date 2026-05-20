@@ -1,0 +1,9 @@
+[package]
+name = "galax-viz"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+galax-core = { path = "../galax-core" }
+galax-io = { path = "../galax-io" }
+minifb = { version = "0.25", default-features = false, features = ["wayland"] }

@@ -1,0 +1,13 @@
+[package]
+name = "galax-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+galax-core = { path = "../galax-core" }
+galax-integrate = { path = "../galax-integrate" }
+galax-init = { path = "../galax-init" }
+galax-io = { path = "../galax-io" }
+clap = { version = "4", features = ["derive"] }
+fastrand = "2"
+indicatif = "0.17"

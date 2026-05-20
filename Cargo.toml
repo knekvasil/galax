@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["galax-core", "galax-integrate", "galax-init", "galax-io", "galax-cli", "galax-bench", "galax-viz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+rayon = "1"

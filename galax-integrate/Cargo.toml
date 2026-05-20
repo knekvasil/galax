@@ -1,0 +1,10 @@
+[package]
+name = "galax-integrate"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+galax-core = { path = "../galax-core" }
+
+[dev-dependencies]
+fastrand = "2"
