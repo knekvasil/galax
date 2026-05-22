@@ -3,12 +3,14 @@ use galax_core::{
     build_p2p_lists, compute_fmm_force, compute_n2_force,
     InteractionLists, BodiesSoA, Tree,
     n2_regression, validate_fmm, build_constrained,
-    allocate_expansions, allocate_locals, p2m, m2m, m2l, l2l, l2p, p2p,
+    allocate_locals, p2m, m2m, m2l, l2l, l2p, p2p,
 };
-use galax_init::{disk, plummer, uniform};
+use galax_gpu::{GpuConfig, GpuContext};
+use galax_init::{disk, plummer, uniform, galaxy};
 use galax_integrate::simulate;
 use galax_io::{read_snapshot, write_snapshot};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::Arc;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -17,60 +19,46 @@ use std::time::Instant;
 struct Args {
     #[arg(long)]
     n: Option<usize>,
-
     #[arg(long)]
     steps: Option<u64>,
-
     #[arg(long)]
     t_end: Option<f64>,
-
     #[arg(long)]
     dt: Option<f64>,
-
     #[arg(long)]
     softening: Option<f64>,
-
     #[arg(long, default_value = "32")]
     n_max: usize,
-
     #[arg(long, default_value = "4")]
     p: usize,
-
     #[arg(long, default_value = "0.5")]
     theta: f64,
-
     #[arg(long)]
     validate: bool,
-
     #[arg(long, default_value = "1000")]
     validate_samples: usize,
-
     #[arg(long)]
     n2_regression: bool,
-
     #[arg(long, default_value = "10")]
     energy_every: u64,
-
     #[arg(long)]
     init: Option<String>,
-
     #[arg(long)]
     out: Option<PathBuf>,
-
     #[arg(long)]
     snap_every: Option<u64>,
-
     #[arg(long)]
     load: Option<PathBuf>,
-
     #[arg(long)]
     convergence: bool,
-
     #[arg(long)]
     progress: bool,
-
     #[arg(long)]
     bench: bool,
+    #[arg(long)]
+    gpu: bool,
+    #[arg(long)]
+    gpu_crosscheck: bool,
 }
 
 fn run_bench(n: usize, p: usize) {
@@ -159,6 +147,7 @@ fn main() {
         match args.init.as_deref().unwrap_or("uniform") {
             "plummer" => plummer(&mut b, n),
             "disk" => disk(&mut b, n),
+            "galaxy" => galaxy(&mut b, n),
             _ => uniform(&mut b, n),
         }
 
@@ -203,6 +192,40 @@ fn main() {
     let m2l_lists = InteractionLists::build(&tree);
     let p2p_lists = build_p2p_lists(&tree);
 
+    if args.gpu_crosscheck {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, ..Default::default() });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: None, force_fallback_adapter: false,
+        })).expect("no GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("galax-gpu"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 16, ..Default::default() },
+                ..Default::default()
+            }, None,
+        )).expect("failed to create GPU device");
+
+        let gpu_config = GpuConfig {
+            max_n: n as u32,
+            max_nodes: tree.nodes.len().max(1024) as u32,
+            max_interactions: (tree.nodes.len() * 64).max(4096) as u32,
+            p: args.p as u32,
+            eps: softening as f32,
+        };
+        let mut gpu_ctx = GpuContext::new(Arc::new(device), Arc::new(queue), gpu_config)
+            .expect("failed to init GPU context");
+        gpu_ctx.upload_tree_data(&tree, &m2l_lists, &p2p_lists);
+
+        println!("\nGPU crosscheck (Layer A):");
+        let (max_err, mean_err, n_samp) = gpu_ctx.crosscheck(
+            &mut bodies, &tree, &m2l_lists, &p2p_lists,
+            args.p, softening, 10.0,
+        );
+        println!("  max_rel_err={:.2e}, mean_rel_err={:.2e}, samples={}", max_err, mean_err, n_samp);
+        return;
+    }
+
     compute_fmm_force(&mut bodies, &tree, &m2l_lists, &p2p_lists, args.p, softening);
 
     let dt = args.dt.unwrap_or_else(|| {
@@ -230,7 +253,66 @@ fn main() {
     println!("Running {} steps, dt={:.6e}, softening={:.6e}", n_steps, dt, softening);
 
     let start = Instant::now();
-    let diags = if args.progress {
+    let diags = if args.gpu {
+        use galax_integrate::simulate_gpu;
+
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no GPU adapter found");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("galax-gpu"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits {
+                    max_storage_buffers_per_shader_stage: 16,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            None,
+        ))
+        .expect("failed to create GPU device");
+
+        let gpu_config = GpuConfig {
+            max_n: n as u32,
+            max_nodes: tree.nodes.len().max(1024) as u32,
+            max_interactions: (tree.nodes.len() * 64).max(4096) as u32,
+            p: args.p as u32,
+            eps: softening as f32,
+        };
+        let mut gpu_ctx = GpuContext::new(Arc::new(device), Arc::new(queue), gpu_config)
+            .expect("failed to init GPU context");
+
+        println!("Using GPU backend (FMM mode)");
+        let result = if args.progress {
+            let pb = ProgressBar::new(n_steps);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:40}] {pos}/{len} steps ({eta})")
+                    .unwrap()
+                    .progress_chars("#>-"),
+            );
+            let r = simulate_gpu(
+                &mut bodies, &tree, &m2l_lists, &p2p_lists, &mut gpu_ctx,
+                args.p, softening, dt, n_steps, args.energy_every,
+            );
+            pb.finish_with_message("simulation complete");
+            r
+        } else {
+            simulate_gpu(
+                &mut bodies, &tree, &m2l_lists, &p2p_lists, &mut gpu_ctx,
+                args.p, softening, dt, n_steps, args.energy_every,
+            )
+        };
+        result
+    } else if args.progress {
         let pb = ProgressBar::new(n_steps);
         pb.set_style(
             ProgressStyle::default_bar()

@@ -148,6 +148,7 @@ use galax_core::{
     compute_momentum, compute_angular_momentum, compute_n2_force,
     InteractionLists, BodiesSoA, Tree,
 };
+use galax_gpu::GpuContext;
 
 /// Run one Leapfrog Kick-Drift-Kick step.
 ///
@@ -282,5 +283,86 @@ pub fn simulate_n2(
             });
         }
     }
+    diags
+}
+
+/// Leapfrog KDK using GPU FMM forces.
+///
+/// Assumes `gpu_ctx.upload_tree_data()` has already been called once.
+pub fn leapfrog_kdk_gpu(
+    bodies: &mut BodiesSoA,
+    gpu_ctx: &GpuContext,
+    dt: f64,
+) {
+    let half_dt = 0.5 * dt;
+
+    // Kick (first half): v += a * dt/2
+    for i in 0..bodies.len() {
+        bodies.vx[i] += bodies.ax[i] * half_dt;
+        bodies.vy[i] += bodies.ay[i] * half_dt;
+    }
+
+    // Drift: x += v * dt
+    for i in 0..bodies.len() {
+        bodies.x[i] += bodies.vx[i] * dt;
+        bodies.y[i] += bodies.vy[i] * dt;
+    }
+
+    // Compute new forces (GPU)
+    gpu_ctx.step(bodies);
+    gpu_ctx.read_accelerations(&mut bodies.ax, &mut bodies.ay);
+
+    // Kick (second half): v += a_new * dt/2
+    for i in 0..bodies.len() {
+        bodies.vx[i] += bodies.ax[i] * half_dt;
+        bodies.vy[i] += bodies.ay[i] * half_dt;
+    }
+}
+
+/// Run simulation using GPU FMM forces.
+///
+/// Uploads static tree data once, then runs the integration loop.
+///
+/// Returns diagnostics at each step where (step % energy_every == 0).
+pub fn simulate_gpu(
+    bodies: &mut BodiesSoA,
+    tree: &Tree,
+    m2l_lists: &InteractionLists,
+    p2p_lists: &InteractionLists,
+    gpu_ctx: &mut GpuContext,
+    _p: usize,
+    _softening: f64,
+    dt: f64,
+    n_steps: u64,
+    energy_every: u64,
+) -> Vec<Diagnostics> {
+    // Upload static tree data once before the loop
+    gpu_ctx.upload_tree_data(tree, m2l_lists, p2p_lists);
+
+    // Compute initial forces (so accelerations are ready for first kick)
+    gpu_ctx.step(bodies);
+    gpu_ctx.read_accelerations(&mut bodies.ax, &mut bodies.ay);
+
+    let mut diags = Vec::new();
+
+    for step in 0..n_steps {
+        leapfrog_kdk_gpu(bodies, gpu_ctx, dt);
+
+        if energy_every > 0 && (step + 1) % energy_every == 0 {
+            let ke = compute_kinetic_energy(bodies);
+            let pe = compute_fmm_potential_energy(bodies);
+            let (px, py) = compute_momentum(bodies);
+            let lz = compute_angular_momentum(bodies);
+            diags.push(Diagnostics {
+                step: step + 1,
+                kinetic: ke,
+                potential: pe,
+                momentum_x: px,
+                momentum_y: py,
+                angular_momentum: lz,
+            });
+        }
+    }
+
     diags
 }

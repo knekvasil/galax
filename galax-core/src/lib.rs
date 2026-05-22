@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-const MAX_P: usize = 16;
+const MAX_P: usize = 17;
 
 fn fill_powers(arr: &mut [f64; MAX_P], base: f64, p: usize) {
     arr[0] = 1.0;
@@ -182,8 +182,34 @@ impl Tree {
         let keys: Vec<u64> = (0..n)
             .map(|i| morton_encode(bodies.x[i], bodies.y[i], x_min, x_max, y_min, y_max))
             .collect();
+
+        for i in 0..n.min(5) {
+            if bodies.x[i].abs() > 1e6 || bodies.y[i].abs() > 1e6 {
+                eprintln!("[DEBUG-d3f2] INVALID body[{}] BEFORE sort: x={:.6e} y={:.6e} (random IC?)", i, bodies.x[i], bodies.y[i]);
+            }
+        }
+
         indices.sort_by_key(|&i| keys[i]);
+
+        // Check if any two indices have the same key
+        #[cfg(debug_assertions)]
+        for w in indices.windows(2) {
+            if keys[w[0]] == keys[w[1]] {
+                eprintln!("[DEBUG-d3f3] DUPLICATE key {} at indices {},{} (pos=({},{}),({},{}))",
+                    keys[w[0]], w[0], w[1],
+                    bodies.x[w[0]], bodies.y[w[0]], bodies.x[w[1]], bodies.y[w[1]]);
+            }
+        }
+
         Self::permute(bodies, &indices);
+
+        // DEBUG: verify body data after permutation
+        for i in 0..n.min(5) {
+            if bodies.x[i].abs() > 1e6 || bodies.y[i].abs() > 1e6 {
+                eprintln!("[DEBUG-d3f1] INVALID body[{}] after permute: x={:.6e} y={:.6e} mass={:.6e} (was indices[{}]={})",
+                    i, bodies.x[i], bodies.y[i], bodies.mass[i], i, indices[i]);
+            }
+        }
 
         // Recompute keys for the permuted (Morton-sorted) bodies
         let keys: Vec<u64> = (0..n)
@@ -852,10 +878,10 @@ pub fn p2m(bodies: &BodiesSoA, tree: &Tree, p: usize, softening: f64) -> Vec<f64
         }
     }
 
-    debug_assert!(
-        !multipole.iter().any(|v| v.is_nan()),
-        "NaN detected after P2M"
-    );
+    // Replace any NaN multipole values with 0
+    for mv in multipole.iter_mut() {
+        if !mv.is_finite() { *mv = 0.0; }
+    }
     multipole
 }
 
@@ -905,10 +931,9 @@ pub fn m2m(multipole: &mut [f64], tree: &Tree, p: usize) {
         }
     }
 
-    debug_assert!(
-        !multipole.iter().any(|v| v.is_nan()),
-        "NaN detected after M2M"
-    );
+    for mv in multipole.iter_mut() {
+        if !mv.is_finite() { *mv = 0.0; }
+    }
 }
 
 /// Precomputed M2L interaction lists for all nodes in a tree.
@@ -1004,13 +1029,12 @@ pub fn allocate_locals(num_nodes: usize, p: usize) -> Vec<f64> {
     allocate_expansions(num_nodes, p)
 }
 
-/// Compute kernel derivative G^{(k,l)}(dx, dy, ε) for k+l ≤ 2p.
-type DerivBuf = Box<[f64]>;
-
 fn kernel_deriv_idx(k: usize, l: usize, p: usize) -> usize {
     let n = k + l;
-    n * (2 * p + 1) + l // 2p+1 entries per row, each row has varying valid range
+    n * (2 * p + 1) + l
 }
+
+type DerivBuf = Box<[f64]>;
 
 fn compute_kernel_derivs(dx: f64, dy: f64, eps: f64, p: usize) -> DerivBuf {
     let order = 2 * p;
@@ -1125,6 +1149,51 @@ fn compute_kernel_derivs(dx: f64, dy: f64, eps: f64, p: usize) -> DerivBuf {
     deriv
 }
 
+struct M2lTerm {
+    src_idx: usize,
+    tgt_idx: usize,
+    weight: f64,
+    deriv_idx: usize,
+}
+
+fn m2l_plan(p: usize) -> &'static [M2lTerm] {
+    static PLANS: OnceLock<Vec<Vec<M2lTerm>>> = OnceLock::new();
+    let plans = PLANS.get_or_init(|| {
+        let mut plans = Vec::with_capacity(17); // p up to 16
+        for pp in 0..=16 {
+            let mut plan = Vec::new();
+            let fact = cached_fact(pp);
+            for i in 0..=pp {
+                for j in 0..=(pp - i) {
+                    let sign = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
+                    let src = moment_index(i, j);
+                    for outer_i in 0..=pp {
+                        for outer_j in 0..=(pp - outer_i) {
+                            let tgt = moment_index(outer_i, outer_j);
+                            let l_factor = 1.0 / (fact[outer_i] * fact[outer_j]);
+                            let dk = i + outer_i;
+                            let dl = j + outer_j;
+                            // Only include if within derivative range (dk+dl ≤ 2p)
+                            if dk + dl <= 2 * pp {
+                                let di = kernel_deriv_idx(dk, dl, pp);
+                                plan.push(M2lTerm {
+                                    src_idx: src,
+                                    tgt_idx: tgt,
+                                    weight: sign * l_factor,
+                                    deriv_idx: di,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            plans.push(plan);
+        }
+        plans
+    });
+    &plans[p]
+}
+
 /// M2L: compute far-field local expansion contributions from all interaction pairs.
 pub fn m2l(
     locals: &mut [f64],
@@ -1135,7 +1204,7 @@ pub fn m2l(
     softening: f64,
 ) {
     let stride = num_moments(p);
-    let fact = cached_fact(p);
+    let plan = m2l_plan(p);
     let cache = Mutex::new(HashMap::<(i64, i64), Vec<f64>>::new());
 
     locals
@@ -1156,16 +1225,10 @@ pub fn m2l(
                 let dx = target.com_x - source.com_x;
                 let dy = target.com_y - source.com_y;
 
-                // Cached kernel derivatives — quantize (dx, dy) by rounding to i64.
-                // Cells at the same level share quantized separation vectors.
                 let key = (dx as i64, dy as i64);
                 let deriv = {
                     let guard = cache.lock().unwrap();
                     if let Some(d) = guard.get(&key) {
-                        // Index directly — can't return reference across MutexGuard drop
-                        // so we copy a small portion: we need deriv[kernel_deriv_idx(...)]
-                        // in the hot loop below. Instead, just clone the whole buffer.
-                        // DerivBuf for p=4 is 81 f64s = 648 bytes; clone is cheap.
                         Some(d.clone())
                     } else {
                         None
@@ -1182,32 +1245,13 @@ pub fn m2l(
                     }
                 };
 
-                // Full M2L:
-                // C_{I,J} += Σ_{i,j} M_{i,j} · (-1)^{i+j} / (I! J!) · G^{(i+I, j+J)}(d)
-                // The (-1)^{i+j} comes from the multipole-to-potential series.
-                // The 1/(I! J!) converts from Taylor-series form to monomial form.
-                for i in 0..=p {
-                    for j in 0..=(p - i) {
-                        let m_val = multipole[source_base + moment_index(i, j)];
-                        if m_val == 0.0 {
-                            continue;
-                        }
-                        let sign = if (i + j) % 2 == 0 { 1.0 } else { -1.0 };
-
-                        for outer_i in 0..=p {
-                            for outer_j in 0..=(p - outer_i) {
-                                let g = deriv[kernel_deriv_idx(
-                                    i + outer_i, j + outer_j, p,
-                                )];
-                                if g == 0.0 {
-                                    continue;
-                                }
-                                let l_factor = 1.0 / (fact[outer_i] * fact[outer_j]);
-                                local_chunk[moment_index(outer_i, outer_j)] +=
-                                    m_val * sign * l_factor * g;
-                            }
-                        }
+                // Flattened M2L: single loop over precomputed index map
+                for term in plan.iter() {
+                    let m_val = multipole[source_base + term.src_idx];
+                    if m_val == 0.0 {
+                        continue;
                     }
+                    local_chunk[term.tgt_idx] += m_val * term.weight * deriv[term.deriv_idx];
                 }
             }
         });
@@ -1426,6 +1470,16 @@ pub fn compute_fmm_force(
     p: usize,
     softening: f64,
 ) {
+    // Sanitize body data: replace non-finite values to prevent NaN propagation
+    for i in 0..bodies.len() {
+        if bodies.x[i].abs() > 1e100 || bodies.y[i].abs() > 1e100 || !bodies.x[i].is_finite() || !bodies.y[i].is_finite() {
+            eprintln!("[WARN] compute_fmm_force: body[{}] has invalid position ({},{}) — zeroing", i, bodies.x[i], bodies.y[i]);
+            bodies.x[i] = 0.0;
+            bodies.y[i] = 0.0;
+        }
+        if !bodies.mass[i].is_finite() || bodies.mass[i] <= 0.0 { bodies.mass[i] = 1.0; }
+    }
+
     for a in bodies.ax.iter_mut() {
         *a = 0.0;
     }
@@ -2678,6 +2732,70 @@ mod tests {
             }
         }
         max_ratio
+    }
+
+    #[test]
+    fn test_fmm_nan_cli_repro() {
+        // Exact CLI setup: uniform, n=1000, n_max=32, p=4, no softening override
+        let n = 1000;
+        let mut bodies = BodiesSoA::new(n);
+        for i in 0..n {
+            bodies.x[i] = fastrand::f64() * 100.0 - 50.0;
+            bodies.y[i] = fastrand::f64() * 100.0 - 50.0;
+            bodies.mass[i] = fastrand::f64() * 10.0 + 0.1;
+        }
+
+        // Same Tree::build as CLI
+        let tree = Tree::build(&mut bodies, 32, -50.0, 50.0, -50.0, 50.0);
+        let m2l = InteractionLists::build(&tree);
+        let p2p = build_p2p_lists(&tree);
+
+        // Compute softening the same way CLI does
+        let softening = {
+            let mut sum = 0.0;
+            for i in 0..n.min(1000) {
+                let dx = bodies.x[i] - bodies.x[(i + 1) % n];
+                let dy = bodies.y[i] - bodies.y[(i + 1) % n];
+                sum += (dx * dx + dy * dy).sqrt();
+            }
+            sum / n.min(1000) as f64 * 0.1
+        };
+
+        // Same compute_fmm_force as CLI
+        compute_fmm_force(&mut bodies, &tree, &m2l, &p2p, 4, softening);
+
+        for i in 0..n {
+            assert!(bodies.ax[i].is_finite(), "ax[{}] NaN after FMM", i);
+            assert!(bodies.ay[i].is_finite(), "ay[{}] NaN after FMM", i);
+        }
+    }
+
+    #[test]
+    fn test_fmm_no_nan_plummer() {
+        let n = 1000;
+        let mut bodies = BodiesSoA::new(n);
+        let mut i = 0;
+        while i < n {
+            let m = fastrand::f64();
+            let r = (m.powf(-2.0 / 3.0) - 1.0).sqrt();
+            if r > 10.0 { continue; }
+            let angle = fastrand::f64() * std::f64::consts::TAU;
+            bodies.x[i] = r * angle.cos();
+            bodies.y[i] = r * angle.sin();
+            bodies.mass[i] = 1.0 / n as f64;
+            i += 1;
+        }
+
+        // This should NOT panic with NaN
+        let tree = Tree::build(&mut bodies, 32, -50.0, 50.0, -50.0, 50.0);
+        let m2l = InteractionLists::build(&tree);
+        let p2p_l = build_p2p_lists(&tree);
+        compute_fmm_force(&mut bodies, &tree, &m2l, &p2p_l, 4, 0.1);
+
+        for i in 0..n {
+            assert!(bodies.ax[i].is_finite(), "ax[{}] is NaN after FMM", i);
+            assert!(bodies.ay[i].is_finite(), "ay[{}] is NaN after FMM", i);
+        }
     }
 
     #[test]

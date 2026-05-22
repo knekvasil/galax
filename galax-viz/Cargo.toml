@@ -6,4 +6,10 @@ edition.workspace = true
 [dependencies]
 galax-core = { path = "../galax-core" }
 galax-io = { path = "../galax-io" }
+galax-init = { path = "../galax-init" }
+galax-integrate = { path = "../galax-integrate" }
+galax-gpu = { path = "../galax-gpu" }
 minifb = { version = "0.25", default-features = false, features = ["wayland"] }
+clap = { version = "4", features = ["derive"] }
+wgpu = "22"
+pollster = "0.4"

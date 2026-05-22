@@ -1,11 +1,13 @@
 [package]
-name = "galax-integrate"
+name = "galax-gpu"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 galax-core = { path = "../galax-core" }
-galax-gpu = { path = "../galax-gpu" }
+wgpu = "22"
 
 [dev-dependencies]
+pollster = "0.4"
 fastrand = "2"
+bytemuck = { version = "1", features = ["derive"] }

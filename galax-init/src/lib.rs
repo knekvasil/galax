@@ -42,6 +42,46 @@ pub fn plummer(bodies: &mut BodiesSoA, n: usize) {
     }
 }
 
+/// Generate a galaxy with a massive central body and orbiting test particles.
+/// Body 0 is a supermassive central mass (SMBH). Bodies 1..N-1 are test
+/// particles in circular orbits with Σ(r) ∝ 1/r surface density.
+pub fn galaxy(bodies: &mut BodiesSoA, n: usize) {
+    let _ = n;
+    let n_bodies = bodies.len();
+    if n_bodies == 0 { return; }
+
+    // Central massive body
+    bodies.x[0] = 0.0;
+    bodies.y[0] = 0.0;
+    bodies.vx[0] = 0.0;
+    bodies.vy[0] = 0.0;
+    bodies.mass[0] = 1000.0; // dominates the potential
+
+    if n_bodies == 1 { return; }
+
+    // Orbiting bodies: surface density Σ(r) ∝ 1/r between r_in and r_out
+    // CDF: r^2, so r ∝ sqrt(u) for uniform u
+    let r_in = 2.0;
+    let r_out = 50.0;
+    let G = 1.0;
+
+    for i in 1..n_bodies {
+        let u = fastrand::f64();
+        let r = (r_in * r_in + u * (r_out * r_out - r_in * r_in)).sqrt();
+
+        let angle = fastrand::f64() * std::f64::consts::TAU;
+        bodies.x[i] = r * angle.cos();
+        bodies.y[i] = r * angle.sin();
+        bodies.mass[i] = 1.0 / n_bodies as f64;
+
+        // Circular velocity around central mass
+        let v_circ = (G * bodies.mass[0] / r).sqrt();
+        // Velocity is perpendicular to radius vector (counter-clockwise)
+        bodies.vx[i] = -v_circ * angle.sin();
+        bodies.vy[i] = v_circ * angle.cos();
+    }
+}
+
 /// Generate a disk galaxy with exponential surface density.
 pub fn disk(bodies: &mut BodiesSoA, n: usize) {
     let _ = n;
@@ -95,6 +135,24 @@ mod tests {
         plummer(&mut bodies, n);
         assert_eq!(bodies.len(), n);
         for i in 0..n {
+            assert!(bodies.x[i].is_finite());
+            assert!(bodies.y[i].is_finite());
+            assert!(bodies.mass[i] > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_galaxy_generates_correct_count() {
+        let n = 100;
+        let mut bodies = BodiesSoA::new(n);
+        galaxy(&mut bodies, n);
+        assert_eq!(bodies.len(), n);
+        // Central body should be massive and at origin
+        assert!((bodies.x[0]).abs() < 1e-15);
+        assert!((bodies.y[0]).abs() < 1e-15);
+        assert_eq!(bodies.mass[0], 1000.0);
+        // Orbiting bodies should be finite
+        for i in 1..n {
             assert!(bodies.x[i].is_finite());
             assert!(bodies.y[i].is_finite());
             assert!(bodies.mass[i] > 0.0);
