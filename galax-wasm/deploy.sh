@@ -7,6 +7,7 @@ wasm-pack build --target web --release
 # Copy static files alongside pkg/
 cp www/index.html pkg/
 cp www/style.css pkg/
+cp www/CNAME pkg/ 2>/dev/null || true
 
 echo ""
 echo "  ✅  Deployable output in pkg/"
