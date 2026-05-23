@@ -166,9 +166,24 @@
         } catch (e) {
             console.error('[galax] init failed:', e);
             const msg = (e && e.message) ? e.message : String(e);
+            const isFirefox = navigator.userAgent.includes('Firefox');
+            const isWebGpuMissing = msg.includes('no adapter') || msg.includes('WebGPU');
             const fb = document.createElement('div');
-            fb.textContent = 'Failed to initialize: ' + msg;
-            fb.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:16px;background:#5a1a1a;color:#ffaaaa;text-align:center;z-index:100;font-family:sans-serif';
+            fb.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:24px;background:#1a1a2e;color:#e0e0e0;text-align:center;z-index:100;font-family:sans-serif;font-size:15px;line-height:1.5';
+            if (isFirefox) {
+                fb.innerHTML = `
+                    <div style="max-width:500px;margin:0 auto">
+                        <strong style="font-size:18px">⚠️ WebGPU not available</strong>
+                        <p style="margin:8px 0 0;color:#aaa">galax uses WebGPU for GPU-accelerated simulation.
+                        Firefox's WebGPU support is still experimental on this platform.</p>
+                        <p style="margin:12px 0 0;color:#888;font-size:13px">Try Chrome 113+ or Edge 113+ for the full experience.</p>
+                    </div>
+                `;
+            } else {
+                fb.textContent = 'Failed to initialize: ' + msg;
+                fb.style.background = '#5a1a1a';
+                fb.style.color = '#ffaaaa';
+            }
             document.body.prepend(fb);
         }
     </script>
