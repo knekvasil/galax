@@ -67,7 +67,7 @@ pub fn galaxy(bodies: &mut BodiesSoA, n: usize) {
     // CDF: r^2, so r ∝ sqrt(u) for uniform u
     let r_in = 2.0;
     let r_out = 50.0;
-    let G = 1.0;
+    let g = 1.0;
 
     for i in 1..n_bodies {
         let u = fastrand::f64();
@@ -79,8 +79,7 @@ pub fn galaxy(bodies: &mut BodiesSoA, n: usize) {
         bodies.mass[i] = 1.0 / n_bodies as f64;
 
         // Circular velocity around central mass
-        let v_circ = (G * bodies.mass[0] / r).sqrt();
-        // Velocity is perpendicular to radius vector (counter-clockwise)
+        let v_circ = (g * bodies.mass[0] / r).sqrt();
         bodies.vx[i] = -v_circ * angle.sin();
         bodies.vy[i] = v_circ * angle.cos();
     }

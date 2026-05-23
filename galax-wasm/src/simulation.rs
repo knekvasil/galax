@@ -18,9 +18,6 @@ const NEEDED_STORAGE_BUFFERS: u32 = 9;
 enum SimBackend {
     Gpu {
         gpu_ctx: GpuContext,
-        tree: Tree,
-        m2l_lists: InteractionLists,
-        p2p_lists: InteractionLists,
         dt: f64,
     },
     Cpu {
@@ -140,13 +137,7 @@ async fn build_gpu_backend(
     gpu_ctx.read_accelerations_async(&mut bodies.ax, &mut bodies.ay).await.map_err(map_gpu_err)?;
 
     Ok((
-        SimBackend::Gpu {
-            gpu_ctx,
-            tree,
-            m2l_lists,
-            p2p_lists,
-            dt,
-        },
+        SimBackend::Gpu { gpu_ctx, dt },
         bodies,
     ))
 }

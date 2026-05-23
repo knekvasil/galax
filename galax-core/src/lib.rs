@@ -693,6 +693,7 @@ fn build_with_constraints(
     Tree { nodes, n_max, x_min, x_max, y_min, y_max }
 }
 
+#[allow(dead_code)]
 /// Build tree with forced split positions (additional leaf boundaries).
 fn build_with_splits(
     bodies: &mut BodiesSoA, n_max: usize,

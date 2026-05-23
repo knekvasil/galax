@@ -258,9 +258,9 @@ pub struct GpuContext {
     p2p_num_indices: u32,
 
     // Sizes
-    dynamics_byte_size: u64,
-    readback_byte_size: u64,
-    expansion_byte_size: u64,
+    _dynamics_byte_size: u64,
+    _readback_byte_size: u64,
+    _expansion_byte_size: u64,
     stride: usize,
 }
 
@@ -270,7 +270,7 @@ impl GpuContext {
         queue: Arc<wgpu::Queue>,
         config: GpuConfig,
     ) -> Result<Self, GpuError> {
-        let stride = ((config.p as usize + 1) * (config.p as usize + 2) / 2);
+        let stride = (config.p as usize + 1) * (config.p as usize + 2) / 2;
         let body_data_byte_size = config.max_n as u64 * 16; // vec4<f32> = 16 bytes per body
         let dynamics_byte_size = config.max_n as u64 * 8;
         let expansion_byte_size = config.max_nodes as u64 * stride as u64 * 4 * 2;
@@ -278,7 +278,7 @@ impl GpuContext {
         let leaf_data_byte_size = config.max_n.max(config.max_nodes) as u64 * 16; // vec4<u32> = 16 bytes per entry
         let centers_size = config.max_nodes as u64 * 8;
         let children_size = config.max_nodes as u64 * 16;
-        let n_derivs = ((2 * config.p as usize + 1) * (2 * config.p as usize + 2) / 2);
+        let n_derivs = (2 * config.p as usize + 1) * (2 * config.p as usize + 2) / 2;
         let deriv_coeffs_size = n_derivs as u64 * stride as u64 * stride as u64 * 4;
         let readback_byte_size = dynamics_byte_size;
         let copy_alignment = 256u64;
@@ -382,8 +382,10 @@ impl GpuContext {
             max_level: 0,
             num_leaves: 0, num_nodes: 0,
             m2l_num_indices: 0, p2p_num_indices: 0,
-            dynamics_byte_size, readback_byte_size,
-            expansion_byte_size, stride,
+            _dynamics_byte_size: dynamics_byte_size,
+            _readback_byte_size: readback_byte_size,
+            _expansion_byte_size: expansion_byte_size,
+            stride,
         })
     }
 
