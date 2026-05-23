@@ -16,10 +16,9 @@ pub fn plummer(bodies: &mut BodiesSoA, n: usize) {
     let mut i = 0;
     while i < bodies.len() {
         // Sample radius from Plummer density profile using inverse transform
-        let m = fastrand::f64(); // uniform in [0, 1)
+        let m = fastrand::f64();
         let r = (m.powf(-2.0 / 3.0) - 1.0).sqrt();
 
-        // Reject if radius exceeds bounds
         if r > 10.0 {
             continue;
         }
@@ -30,10 +29,15 @@ pub fn plummer(bodies: &mut BodiesSoA, n: usize) {
         bodies.y[i] = r * angle.sin();
         bodies.mass[i] = 1.0 / bodies.len() as f64;
 
-        // Velocities from isotropic distribution
-        // v² ∝ 1 / sqrt(1 + r²)
+        // Velocities from isotropic equilibrium distribution.
+        // For a Plummer model the 3D velocity dispersion at radius r is
+        // σ²(r) = 1 / (2 * sqrt(1 + r²)), and the escape velocity is
+        // v_esc² = 2 / sqrt(1 + r²).  The equilibrium distribution has
+        // ⟨v²⟩ = σ² = (1/2) / sqrt(1 + r²).
+        // The naive v = v_esc * sqrt(u) gives ⟨v²⟩ = 1/sqrt(1+r²) which
+        // is 2× too high — scale by 1/√2 to match equilibrium.
         let v_esc = (2.0 / (1.0 + r * r).sqrt()).sqrt();
-        let v = v_esc * fastrand::f64().sqrt();
+        let v = v_esc * fastrand::f64().sqrt() / std::f64::consts::SQRT_2;
         let v_angle = fastrand::f64() * std::f64::consts::TAU;
         bodies.vx[i] = v * v_angle.cos();
         bodies.vy[i] = v * v_angle.sin();
@@ -87,27 +91,34 @@ pub fn disk(bodies: &mut BodiesSoA, n: usize) {
     let _ = n;
     let scale_length = 5.0;
     let n_bodies = bodies.len();
+    let total_mass = 1.0;
 
     for i in 0..n_bodies {
         // Sample radius from exponential distribution: ρ(r) ∝ exp(-r/r_d)
-        // using inverse CDF: r = -r_d · ln(1 - u)
         let r = -scale_length * (1.0 - fastrand::f64()).ln();
 
-        // Random angle
         let angle = fastrand::f64() * std::f64::consts::TAU;
         bodies.x[i] = r * angle.cos();
         bodies.y[i] = r * angle.sin();
         bodies.mass[i] = 1.0 / n_bodies as f64;
 
-        // Circular velocity for exponential disk (approximate)
-        // v_c² = (G · M(r)) / r, where M(r) ≈ total_mass for r >> r_d
-        // Simplified: v_c ≈ constant
-        let v_c = 1.0;
-        // Add some velocity dispersion
+        // Circular velocity from spherical enclosed-mass approximation:
+        //   M(<r) = M_total × [1 − (1 + r/r_d) × exp(−r/r_d)]
+        //   v_circ² = G × M(<r) / r   (G = 1)
+        let x = r / scale_length;
+        let enclosed = total_mass * (1.0 - (1.0 + x) * (-x).exp());
+        let v_circ = if r > 1e-10 && enclosed > 0.0 {
+            (enclosed / r).sqrt()
+        } else {
+            // Solid-body rotation in the core
+            (total_mass / (2.0 * scale_length * scale_length)).sqrt() * r.sqrt()
+        };
+        // Velocity perpendicular to radius (counter-clockwise)
         let v_angle = angle + std::f64::consts::FRAC_PI_2;
-        let disp = fastrand::f64() * 0.1 * v_c;
-        bodies.vx[i] = v_c * v_angle.cos() + disp * (fastrand::f64() - 0.5);
-        bodies.vy[i] = v_c * v_angle.sin() + disp * (fastrand::f64() - 0.5);
+        // Add small velocity dispersion (~5%)
+        let disp = fastrand::f64() * 0.05 * v_circ;
+        bodies.vx[i] = v_circ * v_angle.cos() + disp * (fastrand::f64() - 0.5);
+        bodies.vy[i] = v_circ * v_angle.sin() + disp * (fastrand::f64() - 0.5);
     }
 }
 

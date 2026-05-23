@@ -12,9 +12,9 @@ struct SimParamsRaw {
     num_leaves: u32,
     p: u32,
     eps: f32,
-    _pad1: f32,
+    m2l_num_indices: u32,
     current_level: u32,
-    _pad2: u32,
+    p2p_num_indices: u32,
 }
 
 const UNIFORM_PADDED_SIZE: u64 = 512;
@@ -233,22 +233,16 @@ pub struct GpuContext {
     config: GpuConfig,
 
     // Preallocated buffers
-    geometry_buffer: wgpu::Buffer,
-    mass_buffer: wgpu::Buffer,
+    body_data_buffer: wgpu::Buffer,
     dynamics_buffer: wgpu::Buffer,
     expansion_buffer: wgpu::Buffer,
-    m2l_indices_buffer: wgpu::Buffer,
-    m2l_offsets_buffer: wgpu::Buffer,
-    p2p_indices_buffer: wgpu::Buffer,
-    p2p_offsets_buffer: wgpu::Buffer,
-    leaf_id_buffer: wgpu::Buffer,
+    m2l_data_buffer: wgpu::Buffer,
+    p2p_data_buffer: wgpu::Buffer,
+    leaf_data_buffer: wgpu::Buffer,
     centers_buffer: wgpu::Buffer,
-    leaf_ranges_buffer: wgpu::Buffer,
     children_buffer: wgpu::Buffer,
-    node_levels_buffer: wgpu::Buffer,
     deriv_coeffs_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
-    error_flag_buffer: wgpu::Buffer,
     readback_buffer: wgpu::Buffer,
 
     // Pipelines (all share the same bind group layout and bind group)
@@ -260,6 +254,8 @@ pub struct GpuContext {
     max_level: u32,
     num_leaves: u32,
     num_nodes: u32,
+    m2l_num_indices: u32,
+    p2p_num_indices: u32,
 
     // Sizes
     dynamics_byte_size: u64,
@@ -275,17 +271,13 @@ impl GpuContext {
         config: GpuConfig,
     ) -> Result<Self, GpuError> {
         let stride = ((config.p as usize + 1) * (config.p as usize + 2) / 2);
-        let geometry_byte_size = config.max_n as u64 * 8;
+        let body_data_byte_size = config.max_n as u64 * 16; // vec4<f32> = 16 bytes per body
         let dynamics_byte_size = config.max_n as u64 * 8;
-        let mass_byte_size = config.max_n as u64 * 4;
         let expansion_byte_size = config.max_nodes as u64 * stride as u64 * 4 * 2;
-        let mi_size = config.max_interactions as u64 * 4;
-        let mo_size = (config.max_nodes as u64 + 1) * 4;
-        let leaf_id_size = config.max_n as u64 * 4;
+        let combined_mi_size = (config.max_interactions as u64 + config.max_nodes as u64 + 1) * 4; // indices + offsets
+        let leaf_data_byte_size = config.max_n.max(config.max_nodes) as u64 * 16; // vec4<u32> = 16 bytes per entry
         let centers_size = config.max_nodes as u64 * 8;
-        let leaf_ranges_size = config.max_nodes as u64 * 8;
         let children_size = config.max_nodes as u64 * 16;
-        let node_levels_size = config.max_nodes as u64 * 4;
         let n_derivs = ((2 * config.p as usize + 1) * (2 * config.p as usize + 2) / 2);
         let deriv_coeffs_size = n_derivs as u64 * stride as u64 * stride as u64 * 4;
         let readback_byte_size = dynamics_byte_size;
@@ -295,25 +287,17 @@ impl GpuContext {
             d.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size, usage, mapped_at_creation: false })
         }
 
-        let geometry_buffer = create_buf(&device, "geometry", geometry_byte_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let body_data_buffer = create_buf(&device, "body_data", body_data_byte_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let dynamics_buffer = create_buf(&device, "dynamics", dynamics_byte_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
-        let mass_buffer = create_buf(&device, "mass", mass_byte_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let expansion_buffer = create_buf(&device, "expansions", expansion_byte_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let m2l_indices_buffer = create_buf(&device, "m2l_indices", mi_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let m2l_offsets_buffer = create_buf(&device, "m2l_offsets", mo_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let p2p_indices_buffer = create_buf(&device, "p2p_indices", mi_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let p2p_offsets_buffer = create_buf(&device, "p2p_offsets", mo_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let leaf_id_buffer = create_buf(&device, "leaf_id", leaf_id_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let m2l_data_buffer = create_buf(&device, "m2l_data", combined_mi_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let p2p_data_buffer = create_buf(&device, "p2p_data", combined_mi_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let leaf_data_buffer = create_buf(&device, "leaf_data", leaf_data_byte_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let centers_buffer = create_buf(&device, "centers", centers_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let leaf_ranges_buffer = create_buf(&device, "leaf_ranges", leaf_ranges_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let children_buffer = create_buf(&device, "children", children_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let node_levels_buffer = create_buf(&device, "node_levels", node_levels_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let deriv_coeffs_buffer = create_buf(&device, "deriv_coeffs", deriv_coeffs_size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let uniform_buffer = create_buf(&device, "uniform", UNIFORM_PADDED_SIZE, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
-        let error_flag_buffer = create_buf(&device, "error_flag", 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
         let readback_buffer = create_buf(&device, "readback", (readback_byte_size + copy_alignment - 1) & !(copy_alignment - 1), wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
-
-        queue.write_buffer(&error_flag_buffer, 0, &0u32.to_ne_bytes());
 
         // ── Shader modules ────────────────────────────────────
         let p2m_src = include_str!(concat!(env!("OUT_DIR"), "/p2m.wgsl"));
@@ -334,33 +318,27 @@ impl GpuContext {
             shader_modules.push(module);
         }
 
-        // ── Unified bind group layout (15 bindings) ───────────
+        // ── Unified bind group layout (9 storage + 1 uniform) ──
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("fmm_unified"),
             entries: &[
                 wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 5, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 6, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 7, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 8, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 9, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 10, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 11, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 12, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 13, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 14, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 15, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
             ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fmm"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let mut pipelines = Vec::new();
@@ -369,7 +347,7 @@ impl GpuContext {
                 label: Some(name),
                 layout: Some(&pipeline_layout),
                 module: &module,
-                entry_point: "main",
+                entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
@@ -380,37 +358,30 @@ impl GpuContext {
             label: Some("fmm"),
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &geometry_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &mass_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &dynamics_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &expansion_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &uniform_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &error_flag_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &m2l_indices_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &m2l_offsets_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &p2p_indices_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &p2p_offsets_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &leaf_id_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &centers_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &leaf_ranges_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &children_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &deriv_coeffs_buffer, offset: 0, size: None }) },
-                wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &node_levels_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &body_data_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &dynamics_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &expansion_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &uniform_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &m2l_data_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &p2p_data_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &leaf_data_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &centers_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &children_buffer, offset: 0, size: None }) },
+                wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &deriv_coeffs_buffer, offset: 0, size: None }) },
             ],
         });
 
         Ok(Self {
             device, queue, config,
-            geometry_buffer, mass_buffer, dynamics_buffer, expansion_buffer,
-            m2l_indices_buffer, m2l_offsets_buffer,
-            p2p_indices_buffer, p2p_offsets_buffer,
-            leaf_id_buffer, centers_buffer, leaf_ranges_buffer,
-            children_buffer, node_levels_buffer, deriv_coeffs_buffer,
-            uniform_buffer, error_flag_buffer, readback_buffer,
+            body_data_buffer, dynamics_buffer, expansion_buffer,
+            m2l_data_buffer, p2p_data_buffer, leaf_data_buffer,
+            centers_buffer, children_buffer, deriv_coeffs_buffer,
+            uniform_buffer, readback_buffer,
             bind_group, pipelines,
             level_ranges: Vec::new(),
             max_level: 0,
             num_leaves: 0, num_nodes: 0,
+            m2l_num_indices: 0, p2p_num_indices: 0,
             dynamics_byte_size, readback_byte_size,
             expansion_byte_size, stride,
         })
@@ -426,21 +397,41 @@ impl GpuContext {
         let flat_coeffs = flatten_deriv_coeffs(&polys, order, stride);
         self.queue.write_buffer(&self.deriv_coeffs_buffer, 0, bytes_of_slice(&flat_coeffs));
 
-        // M2L lists
+        // M2L lists (combined: indices then offsets)
         let (m2l_idx, m2l_off) = compact_interaction_lists(m2l_lists);
-        self.queue.write_buffer(&self.m2l_indices_buffer, 0, bytes_of_slice(&m2l_idx));
-        self.queue.write_buffer(&self.m2l_offsets_buffer, 0, bytes_of_slice(&m2l_off));
+        {
+            let mut combined = m2l_idx.clone();
+            combined.extend_from_slice(&m2l_off);
+            self.queue.write_buffer(&self.m2l_data_buffer, 0, bytes_of_slice(&combined));
+            self.m2l_num_indices = m2l_idx.len() as u32;
+        }
 
-        // P2P lists
+        // P2P lists (combined: indices then offsets)
         let (p2p_idx, p2p_off) = compact_interaction_lists(p2p_lists);
-        self.queue.write_buffer(&self.p2p_indices_buffer, 0, bytes_of_slice(&p2p_idx));
-        self.queue.write_buffer(&self.p2p_offsets_buffer, 0, bytes_of_slice(&p2p_off));
+        {
+            let mut combined = p2p_idx.clone();
+            combined.extend_from_slice(&p2p_off);
+            self.queue.write_buffer(&self.p2p_data_buffer, 0, bytes_of_slice(&combined));
+            self.p2p_num_indices = p2p_idx.len() as u32;
+        }
 
-        // Leaf ownership and ranges
-        let leaf_id = build_leaf_id(tree);
-        self.queue.write_buffer(&self.leaf_id_buffer, 0, bytes_of_slice(&leaf_id));
-        let leaf_ranges = build_leaf_ranges(tree);
-        self.queue.write_buffer(&self.leaf_ranges_buffer, 0, bytes_of_slice(&leaf_ranges));
+        // Leaf data: combined leaf_id + leaf_ranges + node_levels
+        {
+            let leaf_id = build_leaf_id(tree);
+            let leaf_ranges = build_leaf_ranges(tree);
+            let node_levels = compute_node_levels(tree);
+            let n_body = leaf_id.len();
+            let n_node = tree.nodes.len();
+            let buf_len = n_body.max(n_node);
+            let mut flat: Vec<u32> = vec![0u32; buf_len * 4];
+            for i in 0..n_body { flat[i * 4] = leaf_id[i]; }
+            for j in 0..n_node {
+                flat[j * 4 + 1] = leaf_ranges[j][0];
+                flat[j * 4 + 2] = leaf_ranges[j][1];
+                flat[j * 4 + 3] = node_levels[j];
+            }
+            self.queue.write_buffer(&self.leaf_data_buffer, 0, bytes_of_slice(&flat));
+        }
 
         // Node centers
         let centers = build_centers_array(tree);
@@ -452,7 +443,6 @@ impl GpuContext {
 
         // Node levels for M2M/L2L level-by-level dispatch
         let node_levels = compute_node_levels(tree);
-        self.queue.write_buffer(&self.node_levels_buffer, 0, bytes_of_slice(&node_levels));
 
         // Build level ranges
         self.max_level = *node_levels.iter().max().unwrap_or(&0);
@@ -478,24 +468,19 @@ impl GpuContext {
 
         let p = self.config.p;
         let eps = self.config.eps;
+        let m2l_ni = self.m2l_num_indices;
+        let p2p_ni = self.p2p_num_indices;
 
-        // ── Write uniform params ──────────────────────────────────
-        let write_params = |queue: &wgpu::Queue, level: u32| {
-            let par = SimParamsRaw { n, num_nodes: nn, num_leaves: nl, p, eps, _pad1: 0.0, current_level: level, _pad2: 0 };
-            queue.write_buffer(&self.uniform_buffer, 0, bytes_of(&par));
-        };
-
-        // ── Upload positions (f64→f32) ────────────────────────────
+        // ── Upload body data (x, y, mass) ─────────────────────────
         {
-            let mut flat: Vec<f32> = Vec::with_capacity(bodies.len() * 2);
-            for i in 0..bodies.len() { flat.push(bodies.x[i] as f32); flat.push(bodies.y[i] as f32); }
-            self.queue.write_buffer(&self.geometry_buffer, 0, bytes_of_slice(&flat));
-        }
-        // ── Upload masses ─────────────────────────────────────────
-        {
-            let mut flat: Vec<f32> = Vec::with_capacity(bodies.len());
-            for i in 0..bodies.len() { flat.push(bodies.mass[i] as f32); }
-            self.queue.write_buffer(&self.mass_buffer, 0, bytes_of_slice(&flat));
+            let mut flat: Vec<f32> = Vec::with_capacity(bodies.len() * 4);
+            for i in 0..bodies.len() {
+                flat.push(bodies.x[i] as f32);
+                flat.push(bodies.y[i] as f32);
+                flat.push(bodies.mass[i] as f32);
+                flat.push(0.0); // pad for vec4
+            }
+            self.queue.write_buffer(&self.body_data_buffer, 0, bytes_of_slice(&flat));
         }
         // ── Zero expansions ───────────────────────────────────────
         {
@@ -507,13 +492,11 @@ impl GpuContext {
             let zeros: Vec<f32> = vec![0.0f32; n as usize * 2];
             self.queue.write_buffer(&self.dynamics_buffer, 0, bytes_of_slice(&zeros));
         }
-        // ── Reset error flag ──────────────────────────────────────
-        self.queue.write_buffer(&self.error_flag_buffer, 0, &0u32.to_ne_bytes());
 
         // ── Write uniform params helper ──────────────────────────
         let write_params = |queue: &wgpu::Queue, level: u32| {
-            let p = SimParamsRaw { n, num_nodes: nn, num_leaves: nl, p, eps, _pad1: 0.0, current_level: level, _pad2: 0 };
-            queue.write_buffer(&self.uniform_buffer, 0, bytes_of(&p));
+            let par = SimParamsRaw { n, num_nodes: nn, num_leaves: nl, p, eps, m2l_num_indices: m2l_ni, current_level: level, p2p_num_indices: p2p_ni };
+            queue.write_buffer(&self.uniform_buffer, 0, bytes_of(&par));
         };
 
         // ── Encoder + dispatch helper ────────────────────────────
@@ -556,24 +539,6 @@ impl GpuContext {
         // 6. P2P
         write_params(&self.queue, 0);
         dispatch_pass(&self.device, &self.queue, 5, n);
-        self.check_error_flag();
-    }
-
-    fn check_error_flag(&self) {
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("error_check") });
-        encoder.copy_buffer_to_buffer(&self.error_flag_buffer, 0, &self.readback_buffer, 0, 4);
-        self.queue.submit(std::iter::once(encoder.finish()));
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let slice = self.readback_buffer.slice(..4);
-        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        let _ = self.device.poll(wgpu::Maintain::Wait);
-        match rx.recv() { Ok(Ok(())) => {} _ => panic!("GPU error flag readback failed"), }
-        let data = slice.get_mapped_range();
-        let flag = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
-        drop(data);
-        self.readback_buffer.unmap();
-        if flag != 0 { panic!("GPU NaN error detected"); }
     }
 
     pub fn read_accelerations(&self, ax: &mut [f64], ay: &mut [f64]) {
@@ -585,10 +550,10 @@ impl GpuContext {
         let (tx, rx) = std::sync::mpsc::channel();
         let slice = self.readback_buffer.slice(..(n as u64 * 8));
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        let _ = self.device.poll(wgpu::Maintain::Wait);
-        match rx.recv() { Ok(Ok(())) => {} _ => panic!("GPU readback mapping failed"), }
-        let data = slice.get_mapped_range();
-        for i in 0..n {
+        let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+    match rx.recv() { Ok(Ok(())) => {} _ => panic!("GPU readback mapping failed"), }
+    let data = slice.get_mapped_range();
+    for i in 0..n {
             let offset = i * 8;
             let x = f32::from_ne_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
             let y = f32::from_ne_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
@@ -596,6 +561,61 @@ impl GpuContext {
         }
         drop(data);
         self.readback_buffer.unmap();
+    }
+
+    /// Async readback that works on both native and WASM.
+    /// On native, this is a thin wrapper around the blocking [`read_accelerations`].
+    /// On WASM, it polls the device and yields to the browser event loop.
+    pub async fn read_accelerations_async(&self, ax: &mut [f64], ay: &mut [f64]) -> Result<(), crate::GpuError> {
+        let n = ax.len().min(ay.len());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("readback_async") });
+        encoder.copy_buffer_to_buffer(&self.dynamics_buffer, 0, &self.readback_buffer, 0, n as u64 * 8);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = self.readback_buffer.slice(..(n as u64 * 8));
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = self.device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+            match rx.recv() { Ok(Ok(())) => {} _ => return Err(GpuError::InitFailed("readback mapping failed".into())), }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            // `device.poll()` is a no-op on WebGPU in wgpu 29.
+            // `Promise.resolve()` yields to micro-tasks, but WebGPU callbacks
+            // fire on macrotasks. We need a `setTimeout(0)` macrotask yield.
+            use wasm_bindgen_futures::JsFuture;
+            loop {
+                if let Ok(Ok(())) = rx.try_recv() {
+                    break;
+                }
+                // Create an actual macrotask yield so the browser processes
+                // pending WebGPU work and fires the map_async callback.
+                let p = js_sys::Promise::new(&mut |resolve, _reject| {
+                    web_sys::window()
+                        .expect("no window for setTimeout")
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0)
+                        .expect("setTimeout failed");
+                });
+                JsFuture::from(p).await
+                    .map_err(|_| GpuError::InitFailed("async yield failed".into()))?;
+            }
+        }
+
+        let data = slice.get_mapped_range();
+        for i in 0..n {
+            let offset = i * 8;
+            let x = f32::from_ne_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+            let y = f32::from_ne_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+            ax[i] = x as f64;
+            ay[i] = y as f64;
+        }
+        drop(data);
+        self.readback_buffer.unmap();
+        Ok(())
     }
 
     /// Run GPU FMM followed by CPU FMM and compare per-body accelerations.
@@ -647,22 +667,21 @@ impl GpuContext {
     /// Dispatch the O(N²) brute-force GPU kernel and read back accelerations.
     pub fn n2_debug(&self, bodies: &BodiesSoA) -> (Vec<f64>, Vec<f64>) {
         let n = bodies.len();
-        // Upload positions and masses
+        // Upload body data (x, y, mass)
         {
-            let mut flat: Vec<f32> = Vec::with_capacity(n * 2);
-            for i in 0..n { flat.push(bodies.x[i] as f32); flat.push(bodies.y[i] as f32); }
-            self.queue.write_buffer(&self.geometry_buffer, 0, bytes_of_slice(&flat));
-        }
-        {
-            let mut flat: Vec<f32> = Vec::with_capacity(n);
-            for i in 0..n { flat.push(bodies.mass[i] as f32); }
-            self.queue.write_buffer(&self.mass_buffer, 0, bytes_of_slice(&flat));
+            let mut flat: Vec<f32> = Vec::with_capacity(n * 4);
+            for i in 0..n {
+                flat.push(bodies.x[i] as f32);
+                flat.push(bodies.y[i] as f32);
+                flat.push(bodies.mass[i] as f32);
+                flat.push(0.0);
+            }
+            self.queue.write_buffer(&self.body_data_buffer, 0, bytes_of_slice(&flat));
         }
         {
             let zeros: Vec<f32> = vec![0.0f32; n * 2];
             self.queue.write_buffer(&self.dynamics_buffer, 0, bytes_of_slice(&zeros));
         }
-        self.queue.write_buffer(&self.error_flag_buffer, 0, &0u32.to_ne_bytes());
 
         let params = SimParamsRaw {
             n: n as u32,
@@ -670,7 +689,9 @@ impl GpuContext {
             num_leaves: self.num_leaves,
             p: self.config.p,
             eps: self.config.eps,
-            _pad1: 0.0, current_level: 0, _pad2: 0,
+            m2l_num_indices: self.m2l_num_indices,
+            current_level: 0,
+            p2p_num_indices: self.p2p_num_indices,
         };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytes_of(&params));
 
@@ -683,7 +704,6 @@ impl GpuContext {
             cp.dispatch_workgroups(wg, 1, 1);
         }
         self.queue.submit(std::iter::once(enc.finish()));
-        self.check_error_flag();
 
         let mut ax = vec![0.0f64; n];
         let mut ay = vec![0.0f64; n];
@@ -702,8 +722,9 @@ mod tests {
     use super::*;
     use galax_core::{build_p2p_lists, InteractionLists, Tree as CoreTree};
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn create_gpu_context(max_n: u32) -> GpuContext {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None, force_fallback_adapter: false,
@@ -718,7 +739,6 @@ mod tests {
                 },
                 ..Default::default()
             },
-            None,
         )).expect("failed to create GPU device");
         let config = GpuConfig { max_n, max_nodes: max_n.max(1024), max_interactions: (max_n * 64).max(4096), p: 4, eps: 0.1 };
         GpuContext::new(Arc::new(device), Arc::new(queue), config).expect("failed to init GPU context")
@@ -739,6 +759,7 @@ mod tests {
         assert_eq!(&indices[0..3], &[1, 2, 3]);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_gpu_full_fmm_vs_cpu_fmm() {
         fastrand::seed(42);
@@ -795,6 +816,7 @@ mod tests {
         assert!(rel_rms < 0.05, "GPU FMM relative RMS error {:.2e} exceeds 5%", rel_rms);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_gpu_p2p_component() {
         // P2P-only comparison to verify the P2P shader still works
@@ -843,6 +865,7 @@ mod tests {
         assert!(max_rel < 1e-4, "P2P component error {:.2e}", max_rel);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn test_crosscheck_layer_a_matches() {
         fastrand::seed(42);

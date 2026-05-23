@@ -2,9 +2,8 @@
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.n) { return; }
-    let my_pos = positions[i];
-    check_nan_val(my_pos.x); check_nan_val(my_pos.y);
-    let lid = leaf_id[i];
+    let my_pos = body_data[i].xy;
+    let lid = leaf_data[i].x;
     let p = params.p;
     let stride = num_moments(p);
     let nn = params.num_nodes;

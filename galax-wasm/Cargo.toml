@@ -1,0 +1,34 @@
+[package]
+name = "galax-wasm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+galax-core = { path = "../galax-core" }
+galax-gpu = { path = "../galax-gpu" }
+galax-init = { path = "../galax-init" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+wgpu = { version = "29", features = ["webgpu"] }
+
+web-sys = { version = "0.3", features = [
+    "CanvasRenderingContext2d",
+    "HtmlCanvasElement",
+    "ImageData",
+    "Window",
+    "Element",
+    "MouseEvent",
+    "WheelEvent",
+    "PointerEvent",
+    "Document",
+    "HtmlElement",
+] }
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+fastrand = "2"

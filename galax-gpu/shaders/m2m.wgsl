@@ -30,7 +30,7 @@ fn process_child(node: u32, child_id: i32, stride: u32, p: u32) {
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let node = id.x;
     if (node >= params.num_nodes) { return; }
-    if (node_levels[node] != params.current_level) { return; }
+    if (leaf_data[node].w != params.current_level) { return; }
     let c = children[node];
     if (c.x < 0) { return; }
     let p = params.p;

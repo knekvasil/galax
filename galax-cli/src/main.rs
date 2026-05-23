@@ -193,7 +193,7 @@ fn main() {
     let p2p_lists = build_p2p_lists(&tree);
 
     if args.gpu_crosscheck {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, ..Default::default() });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: None, force_fallback_adapter: false,
         })).expect("no GPU adapter");
@@ -203,7 +203,7 @@ fn main() {
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 16, ..Default::default() },
                 ..Default::default()
-            }, None,
+            },
         )).expect("failed to create GPU device");
 
         let gpu_config = GpuConfig {
@@ -256,10 +256,7 @@ fn main() {
     let diags = if args.gpu {
         use galax_integrate::simulate_gpu;
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
-        });
+        let instance =         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: None,
@@ -276,7 +273,6 @@ fn main() {
                 },
                 ..Default::default()
             },
-            None,
         ))
         .expect("failed to create GPU device");
 

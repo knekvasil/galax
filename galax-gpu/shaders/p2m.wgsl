@@ -4,7 +4,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (leaf >= params.num_nodes) { return; }
     let p = params.p;
     let stride = num_moments(p);
-    let range = leaf_ranges[leaf];
+    let range = leaf_data[leaf].yz;
     let n_bodies = range.y - range.x;
     if (n_bodies == 0u) { return; }
 
@@ -13,10 +13,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     var com_y = 0.0;
     var total_mass = 0.0;
     for (var b = range.x; b < range.y; b = b + 1u) {
-        let m = masses[b];
+        let bd = body_data[b];
+        let m = bd.z;
         total_mass += m;
-        com_x += positions[b].x * m;
-        com_y += positions[b].y * m;
+        com_x += bd.x * m;
+        com_y += bd.y * m;
     }
     com_x = com_x / total_mass;
     com_y = com_y / total_mass;
@@ -24,9 +25,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Accumulate multipole moments M_{i,j} = sum m * dx^i * dy^j * (-1)^{i+j} / (i! * j!)
     let base = leaf * stride;
     for (var b = range.x; b < range.y; b = b + 1u) {
-        let dx = positions[b].x - com_x;
-        let dy = positions[b].y - com_y;
-        let m = masses[b];
+        let bd = body_data[b];
+        let dx = bd.x - com_x;
+        let dy = bd.y - com_y;
+        let m = bd.z;
         // Precompute powers
         var pow_x: array<f32, 18>;
         var pow_y: array<f32, 18>;

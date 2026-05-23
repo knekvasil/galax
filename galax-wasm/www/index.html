@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>galax — n-body simulation</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <div id="controls" class="control-bar">
+        <div class="control-group">
+            <label for="preset">Preset</label>
+            <select id="preset">
+                <option value="uniform">Uniform</option>
+                <option value="plummer">Plummer</option>
+                <option value="disk">Disk</option>
+                <option value="galaxy">Galaxy</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label for="body-count">Bodies: <span id="body-count-value">10000</span></label>
+            <input type="range" id="body-count" min="10" max="262144" step="10" value="10000">
+        </div>
+        <div class="control-group">
+            <button id="pause-btn">Pause</button>
+        </div>
+    </div>
+
+    <script type="module">
+        try {
+            const module = await import('./galax_wasm.js');
+            const { create_sim_state, default: init } = module;
+            await init();
+
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            const width = 1280;
+            const height = 720;
+            canvas.width = width;
+            canvas.height = height;
+
+            const presetEl = document.getElementById('preset');
+            const bodyCountEl = document.getElementById('body-count');
+            const bodyCountValue = document.getElementById('body-count-value');
+            const pauseBtn = document.getElementById('pause-btn');
+
+            console.log('[galax] creating sim state');
+            let sim = await create_sim_state(10000, 'uniform');
+            console.log('[galax] sim created, N=' + sim.body_count());
+            let paused = false;
+            let lastTime = performance.now();
+            let simStart = performance.now();
+            let stepsPerSec = 0;
+            let stepAccum = 0;
+            let fpsTimer = 0;
+
+            async function renderFrame(time) {
+                const elapsed = time - lastTime;
+                lastTime = time;
+
+                const steps = Math.max(1, Math.ceil(500 * elapsed / 1000));
+                const stepsToRun = Math.min(steps, 10);
+
+                if (!paused) {
+                    for (let i = 0; i < stepsToRun; i++) {
+                        await sim.step();
+                    }
+                    stepAccum += stepsToRun;
+                }
+
+                fpsTimer += elapsed;
+                if (fpsTimer > 500) {
+                    stepsPerSec = stepAccum / (fpsTimer / 1000);
+                    stepAccum = 0;
+                    fpsTimer = 0;
+                }
+
+                sim.render(ctx, width, height, time - simStart, stepsPerSec);
+                requestAnimationFrame(renderFrame);
+            }
+
+            bodyCountEl.addEventListener('input', () => {
+                const n = parseInt(bodyCountEl.value);
+                bodyCountValue.textContent = n.toLocaleString();
+            });
+
+            bodyCountEl.addEventListener('change', async () => {
+                const n = parseInt(bodyCountEl.value);
+                const preset = presetEl.value;
+                console.log('[galax] resize N=' + n + ' preset=' + preset);
+                sim = await create_sim_state(n, preset);
+                simStart = performance.now();
+                stepAccum = 0;
+                fpsTimer = 0;
+            });
+
+            presetEl.addEventListener('change', async () => {
+                const n = parseInt(bodyCountEl.value);
+                const preset = presetEl.value;
+                console.log('[galax] change preset N=' + n + ' preset=' + preset);
+                sim = await create_sim_state(n, preset);
+                simStart = performance.now();
+                stepAccum = 0;
+                fpsTimer = 0;
+            });
+
+            pauseBtn.addEventListener('click', () => {
+                paused = !paused;
+                pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+            });
+
+            canvas.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const rect = canvas.getBoundingClientRect();
+                const mx = e.clientX - rect.left;
+                const my = e.clientY - rect.top;
+                const factor = e.deltaY < 0 ? 1.1 : 0.9;
+                sim.camera_zoom(factor, mx, my, width, height);
+            });
+
+            let dragging = false;
+            let dragX = 0, dragY = 0;
+
+            canvas.addEventListener('pointerdown', (e) => {
+                dragging = true;
+                dragX = e.clientX;
+                dragY = e.clientY;
+                canvas.setPointerCapture(e.pointerId);
+            });
+
+            canvas.addEventListener('pointermove', (e) => {
+                if (!dragging) return;
+                const dx = e.clientX - dragX;
+                const dy = e.clientY - dragY;
+                sim.camera_pan(dx, dy, width, height);
+                dragX = e.clientX;
+                dragY = e.clientY;
+            });
+
+            canvas.addEventListener('pointerup', () => {
+                dragging = false;
+            });
+
+            requestAnimationFrame(renderFrame);
+        } catch (e) {
+            console.error('[galax] init failed:', e);
+            const msg = (e && e.message) ? e.message : String(e);
+            const fb = document.getElementById('fallback') || document.createElement('div');
+            fb.textContent = 'Failed to initialize: ' + msg;
+            fb.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:16px;background:#5a1a1a;color:#ffaaaa;text-align:center;z-index:100';
+            document.body.prepend(fb);
+        }
+    </script>
+</body>
+</html>

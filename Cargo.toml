@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["galax-core", "galax-integrate", "galax-init", "galax-io", "galax-cli", "galax-bench", "galax-viz", "galax-gpu"]
+members = ["galax-core", "galax-integrate", "galax-init", "galax-io", "galax-cli", "galax-bench", "galax-viz", "galax-gpu", "galax-wasm"]
 
 [workspace.package]
 version = "0.1.0"

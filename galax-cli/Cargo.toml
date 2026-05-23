@@ -12,5 +12,5 @@ galax-gpu = { path = "../galax-gpu" }
 clap = { version = "4", features = ["derive"] }
 fastrand = "2"
 indicatif = "0.17"
-wgpu = "22"
+wgpu = "29"
 pollster = "0.4"

@@ -223,9 +223,9 @@ fn main() {
 
     // ── Optional GPU setup ───────────────────────────────────────
     let gpu_ctx = if args.gpu {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::PRIMARY, ..Default::default() });
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: None, force_fallback_adapter: false })).expect("no GPU adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("galax-viz"), required_features: wgpu::Features::empty(), required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 16, ..Default::default() }, ..Default::default() }, None)).expect("GPU device");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { label: Some("galax-viz"), required_features: wgpu::Features::empty(), required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 16, ..Default::default() }, ..Default::default() })).expect("GPU device");
         let cfg = GpuConfig { max_n: args.n.max(args.max_render) as u32, max_nodes: tree.nodes.len().max(1024) as u32, max_interactions: (tree.nodes.len() * 64).max(4096) as u32, p: args.p as u32, eps: softening as f32 };
         let mut ctx = GpuContext::new(Arc::new(device), Arc::new(queue), cfg).expect("init GPU");
         ctx.upload_tree_data(&tree, &m2l, &p2p);

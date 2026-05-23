@@ -4,14 +4,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (node >= params.num_nodes) { return; }
     let p = params.p;
     let stride = num_moments(p);
-    let off = m2l_offsets[node];
-    let next_off = m2l_offsets[node + 1u];
+    let off = m2l_data[params.m2l_num_indices + node];
+    let next_off = m2l_data[params.m2l_num_indices + node + 1u];
     if (next_off == off) { return; }
     let ctr = centers[node];
     let base_local = (params.num_nodes + node) * stride;
     // Precompute all kernel derivatives for each partner
     for (var k = off; k < next_off; k = k + 1u) {
-        let partner = m2l_indices[k];
+        let partner = m2l_data[k];
         let pc = centers[partner];
         let dx = ctr.x - pc.x;
         let dy = ctr.y - pc.y;

@@ -4,13 +4,9 @@ struct SimParams {
     num_leaves: u32,
     p: u32,
     eps: f32,
-    _pad1: f32,
+    m2l_num_indices: u32,
     current_level: u32,
-    _pad2: u32,
-}
-
-struct ErrFlag {
-    value: atomic<u32>,
+    p2p_num_indices: u32,
 }
 
 fn moment_index(i: u32, j: u32) -> u32 {
@@ -31,25 +27,13 @@ fn binom(n: u32, k: u32) -> f32 {
     return fact(n) / (fact(k) * fact(n - k));
 }
 
-@group(0) @binding(0)  var<storage, read>     positions:     array<vec2<f32>>;
-@group(0) @binding(1)  var<storage, read>     masses:        array<f32>;
-@group(0) @binding(2)  var<storage, read_write> accels:      array<vec2<f32>>;
-@group(0) @binding(3)  var<storage, read_write> expansions:  array<f32>;
-@group(0) @binding(4)  var<uniform>           params:        SimParams;
-@group(0) @binding(5)  var<storage, read_write> error_flag:  ErrFlag;
-@group(0) @binding(6)  var<storage, read>     m2l_indices:   array<u32>;
-@group(0) @binding(7)  var<storage, read>     m2l_offsets:   array<u32>;
-@group(0) @binding(8)  var<storage, read>     p2p_indices:   array<u32>;
-@group(0) @binding(9)  var<storage, read>     p2p_offsets:   array<u32>;
-@group(0) @binding(10) var<storage, read>     leaf_id:       array<u32>;
-@group(0) @binding(11) var<storage, read>     centers:       array<vec2<f32>>;
-@group(0) @binding(12) var<storage, read>     leaf_ranges:   array<vec2<u32>>;
-@group(0) @binding(13) var<storage, read>     children:      array<vec4<i32>>;
-@group(0) @binding(14) var<storage, read>     deriv_coeffs:  array<f32>;
-@group(0) @binding(15) var<storage, read>     node_levels:   array<u32>;
-
-fn check_nan_val(v: f32) {
-    if (v != v) {
-        atomicMax(&error_flag.value, 1u);
-    }
-}
+@group(0) @binding(0) var<storage, read>     body_data:    array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> accels:      array<vec2<f32>>;
+@group(0) @binding(2) var<storage, read_write> expansions:  array<f32>;
+@group(0) @binding(3) var<uniform>           params:       SimParams;
+@group(0) @binding(4) var<storage, read>     m2l_data:     array<u32>;
+@group(0) @binding(5) var<storage, read>     p2p_data:     array<u32>;
+@group(0) @binding(6) var<storage, read>     leaf_data:    array<vec4<u32>>;
+@group(0) @binding(7) var<storage, read>     centers:      array<vec2<f32>>;
+@group(0) @binding(8) var<storage, read>     children:     array<vec4<i32>>;
+@group(0) @binding(9) var<storage, read>     deriv_coeffs: array<f32>;
