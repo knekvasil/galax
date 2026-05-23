@@ -11,7 +11,13 @@
 
     <div id="controls" class="control-bar">
         <div class="control-group">
-            <label for="preset">Preset</label>
+            <svg class="icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <circle cx="4" cy="12" r="1.5"/>
+                <circle cx="20" cy="12" r="1.5"/>
+                <circle cx="12" cy="4" r="1.5"/>
+                <circle cx="12" cy="20" r="1.5"/>
+            </svg>
             <select id="preset">
                 <option value="uniform">Uniform</option>
                 <option value="plummer">Plummer</option>
@@ -19,12 +25,24 @@
                 <option value="galaxy">Galaxy</option>
             </select>
         </div>
+
+        <div class="divider"></div>
+
         <div class="control-group">
-            <label for="body-count">Bodies: <span id="body-count-value">10000</span></label>
+            <label for="body-count">Bodies</label>
             <input type="range" id="body-count" min="10" max="262144" step="10" value="10000">
+            <span id="body-count-value" class="value-label">10,000</span>
         </div>
+
+        <div class="divider"></div>
+
         <div class="control-group">
-            <button id="pause-btn">Pause</button>
+            <button id="pause-btn" class="icon-btn" title="Pause / Resume">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                    <rect x="6" y="4" width="4" height="16" rx="1"/>
+                    <rect x="14" y="4" width="4" height="16" rx="1"/>
+                </svg>
+            </button>
         </div>
     </div>
 
@@ -36,19 +54,20 @@
 
             const canvas = document.getElementById('canvas');
             const ctx = canvas.getContext('2d');
-            const width = 1280;
-            const height = 720;
-            canvas.width = width;
-            canvas.height = height;
+
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
 
             const presetEl = document.getElementById('preset');
             const bodyCountEl = document.getElementById('body-count');
             const bodyCountValue = document.getElementById('body-count-value');
             const pauseBtn = document.getElementById('pause-btn');
 
-            console.log('[galax] creating sim state');
             let sim = await create_sim_state(10000, 'uniform');
-            console.log('[galax] sim created, N=' + sim.body_count());
             let paused = false;
             let lastTime = performance.now();
             let simStart = performance.now();
@@ -60,8 +79,8 @@
                 const elapsed = time - lastTime;
                 lastTime = time;
 
-                const steps = Math.max(1, Math.ceil(500 * elapsed / 1000));
-                const stepsToRun = Math.min(steps, 10);
+                const steps = Math.max(1, Math.ceil(100 * elapsed / 1000));
+                const stepsToRun = Math.min(steps, 5);
 
                 if (!paused) {
                     for (let i = 0; i < stepsToRun; i++) {
@@ -77,19 +96,17 @@
                     fpsTimer = 0;
                 }
 
-                sim.render(ctx, width, height, time - simStart, stepsPerSec);
+                sim.render(ctx, canvas.width, canvas.height, time - simStart, stepsPerSec);
                 requestAnimationFrame(renderFrame);
             }
 
             bodyCountEl.addEventListener('input', () => {
-                const n = parseInt(bodyCountEl.value);
-                bodyCountValue.textContent = n.toLocaleString();
+                bodyCountValue.textContent = parseInt(bodyCountEl.value).toLocaleString();
             });
 
             bodyCountEl.addEventListener('change', async () => {
                 const n = parseInt(bodyCountEl.value);
                 const preset = presetEl.value;
-                console.log('[galax] resize N=' + n + ' preset=' + preset);
                 sim = await create_sim_state(n, preset);
                 simStart = performance.now();
                 stepAccum = 0;
@@ -99,7 +116,6 @@
             presetEl.addEventListener('change', async () => {
                 const n = parseInt(bodyCountEl.value);
                 const preset = presetEl.value;
-                console.log('[galax] change preset N=' + n + ' preset=' + preset);
                 sim = await create_sim_state(n, preset);
                 simStart = performance.now();
                 stepAccum = 0;
@@ -108,7 +124,10 @@
 
             pauseBtn.addEventListener('click', () => {
                 paused = !paused;
-                pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+                pauseBtn.innerHTML = paused
+                    ? '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="6,4 20,12 6,20"/></svg>'
+                    : '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
+                pauseBtn.title = paused ? 'Resume' : 'Pause';
             });
 
             canvas.addEventListener('wheel', (e) => {
@@ -117,7 +136,7 @@
                 const mx = e.clientX - rect.left;
                 const my = e.clientY - rect.top;
                 const factor = e.deltaY < 0 ? 1.1 : 0.9;
-                sim.camera_zoom(factor, mx, my, width, height);
+                sim.camera_zoom(factor, mx, my, canvas.width, canvas.height);
             });
 
             let dragging = false;
@@ -134,7 +153,7 @@
                 if (!dragging) return;
                 const dx = e.clientX - dragX;
                 const dy = e.clientY - dragY;
-                sim.camera_pan(dx, dy, width, height);
+                sim.camera_pan(dx, dy, canvas.width, canvas.height);
                 dragX = e.clientX;
                 dragY = e.clientY;
             });
@@ -147,9 +166,9 @@
         } catch (e) {
             console.error('[galax] init failed:', e);
             const msg = (e && e.message) ? e.message : String(e);
-            const fb = document.getElementById('fallback') || document.createElement('div');
+            const fb = document.createElement('div');
             fb.textContent = 'Failed to initialize: ' + msg;
-            fb.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:16px;background:#5a1a1a;color:#ffaaaa;text-align:center;z-index:100';
+            fb.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:16px;background:#5a1a1a;color:#ffaaaa;text-align:center;z-index:100;font-family:sans-serif';
             document.body.prepend(fb);
         }
     </script>

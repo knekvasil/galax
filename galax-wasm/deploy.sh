@@ -8,5 +8,11 @@ wasm-pack build --target web --release
 cp www/index.html pkg/
 cp www/style.css pkg/
 
-echo "Deployable output in pkg/"
-echo "Serve with: npx serve pkg/"
+echo ""
+echo "  ✅  Deployable output in pkg/"
+echo ""
+echo "  📦  Local:    npx serve pkg/"
+echo "  ⚡  Surge:    npx surge pkg/ galax-nbody.surge.sh"
+echo "  ☁️   Vercel:   npx vercel pkg/"
+echo "  🦆  Cloudflare: drag pkg/ into https://dash.cloudflare.com → Pages"
+echo ""

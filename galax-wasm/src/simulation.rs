@@ -119,10 +119,25 @@ async fn build_gpu_backend(
         .map_err(|e| JsValue::from_str(&format!("GPU init: {}", e)))?;
     gpu_ctx.upload_tree_data(&tree, &m2l_lists, &p2p_lists);
 
+    // Compute dt from CPU FMM forces (exact, used by native viz too), then
+    // overwrite accelerations with GPU forces for the simulation loop.
+    let dt = {
+        let softening = eps as f64;
+        let mut cpu_bodies = BodiesSoA::new(n);
+        cpu_bodies.x.copy_from_slice(&bodies.x);
+        cpu_bodies.y.copy_from_slice(&bodies.y);
+        cpu_bodies.mass.copy_from_slice(&bodies.mass);
+        compute_fmm_force(&mut cpu_bodies, &tree, &m2l_lists, &p2p_lists, p_order, softening);
+        let ma = cpu_bodies.ax.iter().zip(cpu_bodies.ay.iter())
+            .map(|(x,y)| (x*x+y*y).sqrt()).fold(0.0_f64, f64::max);
+        let d = if ma > 1e-30 { 0.5 / ma.sqrt() } else { 0.01 };
+        web_sys::console::log_1(&format!("[galax] dt from CPU: {:.6e} (max|a|={:.6e})", d, ma).into());
+        d
+    };
+
+    // One GPU step to get GPU accelerations for the simulation loop
     gpu_ctx.step(&bodies);
     gpu_ctx.read_accelerations_async(&mut bodies.ax, &mut bodies.ay).await.map_err(map_gpu_err)?;
-
-    let dt = compute_dt(&bodies);
 
     Ok((
         SimBackend::Gpu {
