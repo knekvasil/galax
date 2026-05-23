@@ -663,6 +663,7 @@ dependencies = [
  "galax-gpu",
  "galax-init",
  "js-sys",
+ "pollster",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

@@ -6,6 +6,10 @@ accelerated by GPU compute (WebGPU / wgpu).
 ![screenshot](https://img.shields.io/badge/status-active-brightgreen)
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
 
+<p align="center">
+  <img src="docs/simulation.gif" width="640" alt="galax simulation: 50,000 bodies clustering under gravity">
+</p>
+
 ## Overview
 
 galax simulates the gravitational interaction of up to hundreds of thousands
