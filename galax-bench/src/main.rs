@@ -4,12 +4,6 @@ use galax_core::{
 };
 use std::time::Instant;
 
-fn timestamp() -> f64 {
-    let elapsed = Instant::now();
-    std::mem::forget(elapsed); // dummy
-    0.0
-}
-
 fn bench<F>(name: &str, n: usize, f: F)
 where
     F: FnOnce(),
@@ -88,7 +82,7 @@ fn main() {
         });
 
         // M2L
-        let mut locals = allocate_locals(tree.nodes.len(), p);
+        let locals = allocate_locals(tree.nodes.len(), p);
         bench("m2l", n, || {
             let mut l = locals.clone();
             m2l(&mut l, &multipole, &m2l_lists, &tree, p, softening);
