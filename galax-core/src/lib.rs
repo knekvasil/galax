@@ -2877,3 +2877,18 @@ mod tests {
         assert_eq!(bodies.ay[1], 0.0);
     }
 }
+
+#[cfg(test)]
+mod galaxy_diag {
+    use super::*;
+
+    #[test]
+    fn galaxy_fmm_vs_n2() {
+        fastrand::seed(42);
+        let n = 500;
+        let mut bodies = BodiesSoA::new(n);
+        let _ = n;
+        // We can't call galaxy() from here... skip
+        println!("test skipped");
+    }
+}

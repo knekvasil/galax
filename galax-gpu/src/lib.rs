@@ -731,14 +731,12 @@ mod tests {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: None, force_fallback_adapter: false,
         })).expect("no GPU adapter");
+        let limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("test"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits {
-                    max_storage_buffers_per_shader_stage: 16,
-                    ..Default::default()
-                },
+                required_limits: limits,
                 ..Default::default()
             },
         )).expect("failed to create GPU device");

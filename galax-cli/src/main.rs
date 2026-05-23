@@ -197,11 +197,12 @@ fn main() {
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance, compatible_surface: None, force_fallback_adapter: false,
         })).expect("no GPU adapter");
+        let dev_limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("galax-gpu"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits { max_storage_buffers_per_shader_stage: 16, ..Default::default() },
+                required_limits: dev_limits,
                 ..Default::default()
             },
         )).expect("failed to create GPU device");
@@ -263,14 +264,12 @@ fn main() {
             force_fallback_adapter: false,
         }))
         .expect("no GPU adapter found");
+        let dev_limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("galax-gpu"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits {
-                    max_storage_buffers_per_shader_stage: 16,
-                    ..Default::default()
-                },
+                required_limits: dev_limits,
                 ..Default::default()
             },
         ))

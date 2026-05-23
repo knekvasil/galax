@@ -1,5 +1,5 @@
 use galax_core::{
-    build_p2p_lists, build_constrained, compute_fmm_force, InteractionLists, BodiesSoA, Tree,
+    build_p2p_lists, build_constrained, compute_fmm_force, InteractionLists, BodiesSoA,
 };
 use galax_gpu::{GpuConfig, GpuContext};
 use galax_init::{disk, galaxy, plummer, uniform};
@@ -20,14 +20,6 @@ enum SimBackend {
         gpu_ctx: GpuContext,
         dt: f64,
     },
-    Cpu {
-        tree: Tree,
-        m2l_lists: InteractionLists,
-        p2p_lists: InteractionLists,
-        p: usize,
-        softening: f64,
-        dt: f64,
-    },
 }
 
 pub struct SimState {
@@ -36,20 +28,6 @@ pub struct SimState {
     pub n: usize,
     pub preset: String,
     backend: SimBackend,
-}
-
-fn compute_dt(bodies: &BodiesSoA) -> f64 {
-    let ma = bodies
-        .ax
-        .iter()
-        .zip(bodies.ay.iter())
-        .map(|(x, y)| (x * x + y * y).sqrt())
-        .fold(0.0_f64, f64::max);
-    if ma > 1e-30 {
-        0.5 / ma.sqrt()
-    } else {
-        0.01
-    }
 }
 
 fn choose_init(preset: &str, bodies: &mut BodiesSoA) {
@@ -142,42 +120,9 @@ async fn build_gpu_backend(
     ))
 }
 
-async fn build_cpu_backend(
-    n: usize,
-    preset: &str,
-    p_order: usize,
-    eps: f32,
-) -> Result<(SimBackend, BodiesSoA), JsValue> {
-    let mut bodies = BodiesSoA::new(n);
-    choose_init(preset, &mut bodies);
-
-    let tree = build_constrained(&mut bodies, 32, -50.0, 50.0, -50.0, 50.0);
-    let m2l_lists = InteractionLists::build(&tree);
-    let p2p_lists = build_p2p_lists(&tree);
-    let softening = eps as f64;
-
-    compute_fmm_force(&mut bodies, &tree, &m2l_lists, &p2p_lists, p_order, softening);
-    let dt = compute_dt(&bodies);
-
-    Ok((
-        SimBackend::Cpu {
-            tree,
-            m2l_lists,
-            p2p_lists,
-            p: p_order,
-            softening,
-            dt,
-        },
-        bodies,
-    ))
-}
-
 impl SimState {
     pub async fn new(n: usize, preset: &str, p_order: usize, eps: f32) -> Result<SimState, JsValue> {
-        let (backend, bodies) = match build_gpu_backend(n, preset, p_order, eps).await {
-            Ok(ok) => ok,
-            Err(_) => build_cpu_backend(n, preset, p_order, eps).await?,
-        };
+        let (backend, bodies) = build_gpu_backend(n, preset, p_order, eps).await?;
 
         Ok(SimState {
             bodies,
@@ -189,10 +134,8 @@ impl SimState {
     }
 
     pub async fn step(&mut self) -> Result<(), JsValue> {
-        let dt = match &self.backend {
-            SimBackend::Gpu { dt, .. } => *dt,
-            SimBackend::Cpu { dt, .. } => *dt,
-        };
+        let SimBackend::Gpu { dt, .. } = &self.backend;
+        let dt = *dt;
         let n = self.bodies.len();
 
         for i in 0..n {
@@ -204,15 +147,9 @@ impl SimState {
             self.bodies.y[i] += self.bodies.vy[i] * dt;
         }
 
-        match &mut self.backend {
-            SimBackend::Gpu { gpu_ctx, .. } => {
-                gpu_ctx.step(&self.bodies);
-                gpu_ctx.read_accelerations_async(&mut self.bodies.ax, &mut self.bodies.ay).await.map_err(map_gpu_err)?;
-            }
-            SimBackend::Cpu { tree, m2l_lists, p2p_lists, p, softening, .. } => {
-                compute_fmm_force(&mut self.bodies, tree, m2l_lists, p2p_lists, *p, *softening);
-            }
-        }
+        let SimBackend::Gpu { gpu_ctx, .. } = &mut self.backend;
+        gpu_ctx.step(&self.bodies);
+        gpu_ctx.read_accelerations_async(&mut self.bodies.ax, &mut self.bodies.ay).await.map_err(map_gpu_err)?;
 
         for i in 0..n {
             self.bodies.vx[i] += self.bodies.ax[i] * dt / 2.0;
@@ -224,12 +161,7 @@ impl SimState {
     }
 
     pub async fn resize(&mut self, n: usize, preset: &str) -> Result<(), JsValue> {
-        let p_order = 4;
-        let eps = 0.1;
-        let (backend, bodies) = match build_gpu_backend(n, preset, p_order, eps).await {
-            Ok(ok) => ok,
-            Err(_) => build_cpu_backend(n, preset, p_order, eps).await?,
-        };
+        let (backend, bodies) = build_gpu_backend(n, preset, 4, 0.1).await?;
         self.bodies = bodies;
         self.backend = backend;
         self.n = n;
