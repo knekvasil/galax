@@ -1,4 +1,4 @@
-use galax_core::BodiesSoA;
+use galax_core::{BodiesSoA, BodyTracker};
 use wasm_bindgen::{Clamped, JsValue};
 use web_sys::{CanvasRenderingContext2d, ImageData};
 
@@ -85,6 +85,7 @@ pub fn render_frame(
     step: u64,
     elapsed_ms: f64,
     steps_per_sec: f64,
+    tracker: Option<&BodyTracker>,
 ) -> Result<(), JsValue> {
     let pixel_count = (width * height * 4) as usize;
     let mut buf = vec![0u8; pixel_count];
@@ -94,7 +95,17 @@ pub fn render_frame(
         let w = width as f64;
         let h = height as f64;
 
+        // Draw trail first
+        if let Some(tr) = tracker {
+            if tr.tracked_index.is_some() {
+                draw_trail_rgba(&mut buf, width, height, tr, cam, bounds, 0, 136, 204);
+            }
+        }
+
+        let tracked_idx = tracker.and_then(|t| t.tracked_index);
+
         for i in 0..n {
+            if tracked_idx == Some(i) { continue; }
             if let Some((sx, sy)) = world_to_screen(bodies.x[i], bodies.y[i], cam, bounds, w, h) {
                 let idx = (sy as u32 * width + sx as u32) as usize * 4;
                 if idx + 2 < pixel_count {
@@ -102,6 +113,30 @@ pub fn render_frame(
                     buf[idx + 1] = 170;
                     buf[idx + 2] = 170;
                     buf[idx + 3] = 255;
+                }
+            }
+        }
+
+        // Draw tracked body highlighted
+        if let Some(idx) = tracked_idx {
+            if idx < n {
+                if let Some((sx, sy)) = world_to_screen(bodies.x[idx], bodies.y[idx], cam, bounds, w, h) {
+                    let cx = sx as u32;
+                    let cy = sy as u32;
+                    let set_pixel = |buf: &mut [u8], px: u32, py: u32| {
+                        let idx = (py * width + px) as usize * 4;
+                        if idx + 2 < pixel_count {
+                            buf[idx] = 0;
+                            buf[idx + 1] = 255;
+                            buf[idx + 2] = 255;
+                            buf[idx + 3] = 255;
+                        }
+                    };
+                    set_pixel(&mut buf, cx, cy);
+                    if cx > 0 { set_pixel(&mut buf, cx - 1, cy); }
+                    if cx + 1 < width { set_pixel(&mut buf, cx + 1, cy); }
+                    if cy > 0 { set_pixel(&mut buf, cx, cy - 1); }
+                    if cy + 1 < height { set_pixel(&mut buf, cx, cy + 1); }
                 }
             }
         }
@@ -125,6 +160,44 @@ pub fn render_frame(
     let image_data = ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf), width, height)?;
     ctx.put_image_data(&image_data, 0.0, 0.0)?;
     Ok(())
+}
+
+fn draw_line_rgba(buf: &mut [u8], width: u32, height: u32, x0: f64, y0: f64, x1: f64, y1: f64, r: u8, g: u8, b: u8) {
+    let mut x = x0.round() as i32;
+    let mut y = y0.round() as i32;
+    let xe = x1.round() as i32;
+    let ye = y1.round() as i32;
+    let dx = (xe - x).abs();
+    let dy = -(ye - y).abs();
+    let sx = if x < xe { 1 } else { -1 };
+    let sy = if y < ye { 1 } else { -1 };
+    let mut err = dx + dy;
+    let w = width as i32;
+    let h = height as i32;
+    loop {
+        if x >= 0 && x < w && y >= 0 && y < h {
+            let idx = (y as u32 * width + x as u32) as usize * 4;
+            buf[idx] = r;
+            buf[idx + 1] = g;
+            buf[idx + 2] = b;
+            buf[idx + 3] = 255;
+        }
+        if x == xe && y == ye { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x += sx; }
+        if e2 <= dx { err += dx; y += sy; }
+    }
+}
+
+fn draw_trail_rgba(buf: &mut [u8], width: u32, height: u32, tracker: &BodyTracker, cam: &Camera, bounds: &WorldBounds, r: u8, g: u8, b: u8) {
+    let w = width as f64;
+    let h = height as f64;
+    let pts: Vec<(f64, f64)> = tracker.history().iter().filter_map(|&(wx, wy)| {
+        world_to_screen(wx, wy, cam, bounds, w, h)
+    }).collect();
+    for pair in pts.windows(2) {
+        draw_line_rgba(buf, width, height, pair[0].0, pair[0].1, pair[1].0, pair[1].1, r, g, b);
+    }
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use galax_init::{disk, plummer, uniform, galaxy};
 use galax_integrate::leapfrog_kdk;
 use galax_integrate::leapfrog_kdk_gpu;
 use galax_io::read_snapshot;
+use galax_core::BodyTracker;
 use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,6 +69,10 @@ struct Args {
     /// Use GPU acceleration for FMM
     #[arg(long)]
     gpu: bool,
+
+    /// Index of body to highlight and trace path
+    #[arg(long)]
+    track: Option<usize>,
 }
 
 struct Camera {
@@ -100,26 +105,88 @@ fn handle_camera(window: &Window, cam: &mut Camera, w: usize, h: usize) {
     } else { cam.dragging = false; }
 }
 
-fn render_frame(buf: &mut [u32], w: usize, h: usize, bodies: &BodiesSoA, step: u64, elapsed: Duration, sps: f64, max_render: usize, cam: &Camera, bounds: &WorldBounds, mode_label: &str) {
+fn world_to_screen(x: f64, y: f64, cam: &Camera, bounds: &WorldBounds, w: usize, h: usize) -> Option<(f64, f64)> {
+    if !x.is_finite() || !y.is_finite() { return None; }
+    let xr = (bounds.x_max - bounds.x_min).max(1.0);
+    let yr = (bounds.y_max - bounds.y_min).max(1.0);
+    let nx = ((x - bounds.x_min) / xr) - 0.5;
+    let ny = ((y - bounds.y_min) / yr) - 0.5;
+    let sx = (nx * cam.zoom + 0.5 + cam.offset_x) * w as f64;
+    let sy = (ny * cam.zoom + 0.5 + cam.offset_y) * h as f64;
+    if sx >= 0.0 && sx < w as f64 && sy >= 0.0 && sy < h as f64 { Some((sx, sy)) } else { None }
+}
+
+fn draw_line(buf: &mut [u32], w: usize, h: usize, x0: f64, y0: f64, x1: f64, y1: f64, color: u32) {
+    let mut x = x0.round() as i32;
+    let mut y = y0.round() as i32;
+    let xe = x1.round() as i32;
+    let ye = y1.round() as i32;
+    let dx = (xe - x).abs();
+    let dy = -(ye - y).abs();
+    let sx = if x < xe { 1 } else { -1 };
+    let sy = if y < ye { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        if x >= 0 && x < w as i32 && y >= 0 && y < h as i32 { buf[y as usize * w + x as usize] = color; }
+        if x == xe && y == ye { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x += sx; }
+        if e2 <= dx { err += dx; y += sy; }
+    }
+}
+
+fn draw_trail(buf: &mut [u32], w: usize, h: usize, tracker: &BodyTracker, cam: &Camera, bounds: &WorldBounds, color: u32) {
+    let pts: Vec<(f64, f64)> = tracker.history().iter().filter_map(|&(wx, wy)| {
+        world_to_screen(wx, wy, cam, bounds, w, h)
+    }).collect();
+    for pair in pts.windows(2) {
+        draw_line(buf, w, h, pair[0].0, pair[0].1, pair[1].0, pair[1].1, color);
+    }
+    if let Some(&last) = pts.last() {
+        buf[last.1 as usize * w + last.0 as usize] = color | 0x00_00_80;
+    }
+}
+
+fn render_frame(buf: &mut [u32], w: usize, h: usize, bodies: &BodiesSoA, step: u64, elapsed: Duration, sps: f64, max_render: usize, cam: &Camera, bounds: &WorldBounds, mode_label: &str, tracker: Option<&BodyTracker>) {
     for p in buf.iter_mut() { *p = 0; }
     let n = bodies.len();
     if n == 0 { return; }
 
-    let x_min = bounds.x_min; let x_max = bounds.x_max;
-    let y_min = bounds.y_min; let y_max = bounds.y_max;
-    if x_min >= x_max || y_min >= y_max { return; }
-    let xr = (x_max - x_min).max(1.0); let yr = (y_max - y_min).max(1.0);
+    if bounds.x_min >= bounds.x_max || bounds.y_min >= bounds.y_max { return; }
     let ds = if max_render > 0 && max_render < n { (n / max_render).max(1) } else { 1 };
 
+    // Draw trail first (under bodies)
+    if let Some(tr) = tracker {
+        if tr.tracked_index.is_some() {
+            draw_trail(buf, w, h, tr, cam, bounds, 0x00_88_CC);
+        }
+    }
+
+    let tracked_idx = tracker.and_then(|t| t.tracked_index);
+
     for i in (0..n).step_by(ds) {
+        if tracked_idx == Some(i) { continue; }
         let (x, y) = (bodies.x[i], bodies.y[i]);
         if !x.is_finite() || !y.is_finite() { continue; }
-        let nx = ((x - x_min) / xr) - 0.5;
-        let ny = ((y - y_min) / yr) - 0.5;
-        let sx = (nx * cam.zoom + 0.5 + cam.offset_x) * w as f64;
-        let sy = (ny * cam.zoom + 0.5 + cam.offset_y) * h as f64;
-        if sx >= 0.0 && sx < w as f64 && sy >= 0.0 && sy < h as f64 {
+        if let Some((sx, sy)) = world_to_screen(x, y, cam, bounds, w, h) {
             buf[sy as usize * w + sx as usize] = 0xAA_AA_AA;
+        }
+    }
+
+    // Draw tracked body highlighted (always, regardless of subsampling)
+    if let Some(idx) = tracked_idx {
+        if idx < n {
+            if let Some((sx, sy)) = world_to_screen(bodies.x[idx], bodies.y[idx], cam, bounds, w, h) {
+                // Bright cyan highlight with a cross for visibility
+                buf[sy as usize * w + sx as usize] = 0x00_FF_FF;
+                for &(dx, dy) in &[(-1,0),(1,0),(0,-1),(0,1)] {
+                    let px = sx as i32 + dx;
+                    let py = sy as i32 + dy;
+                    if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
+                        buf[py as usize * w + px as usize] = 0x00_FF_FF;
+                    }
+                }
+            }
         }
     }
 
@@ -186,7 +253,7 @@ fn main() {
             if buf.len() != w * h { buf = vec![0u32; w * h]; }
             handle_camera(&win, &mut cam, w, h);
             let snap_bounds = WorldBounds { x_min: -50.0, x_max: 50.0, y_min: -50.0, y_max: 50.0, frame: 1 };
-            render_frame(&mut buf, w, h, &bodies, 0, Duration::ZERO, 0.0, args.max_render, &cam, &snap_bounds, "snap");
+            render_frame(&mut buf, w, h, &bodies, 0, Duration::ZERO, 0.0, args.max_render, &cam, &snap_bounds, "snap", None);
             win.update_with_buffer(&buf, w, h).expect("update");
         }
         return;
@@ -220,6 +287,12 @@ fn main() {
     // Capture initial world bounds ONCE — camera never auto-adjusts
     let mut init_bounds = WorldBounds::new();
     init_bounds.get(&bodies, 1);
+
+    // ── Body tracker ──────────────────────────────────────────────
+    let mut tracker = BodyTracker::new(2000);
+    if let Some(idx) = args.track {
+        if idx < args.n { tracker.track(Some(idx)); }
+    }
 
     // ── Optional GPU setup ───────────────────────────────────────
     let gpu_ctx = if args.gpu {
@@ -267,6 +340,7 @@ fn main() {
             }
             step += 1;
             steps_this_frame += 1;
+            tracker.record(&bodies);
             if steps_this_frame >= steps_to_run || step_start.elapsed() > frame_budget {
                 break;
             }
@@ -278,7 +352,7 @@ fn main() {
         }
 
         let sps = if real_elapsed > 0.0 { steps_this_frame as f64 / real_elapsed } else { 0.0 };
-        render_frame(&mut buf, w, h, &bodies, step, global_start.elapsed(), sps, args.max_render, &cam, &init_bounds, mode_label);
+        render_frame(&mut buf, w, h, &bodies, step, global_start.elapsed(), sps, args.max_render, &cam, &init_bounds, mode_label, Some(&tracker));
         win.update_with_buffer(&buf, w, h).expect("update");
         last_render = Instant::now();
     }

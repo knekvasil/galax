@@ -1,5 +1,5 @@
 use galax_core::{
-    build_p2p_lists, build_constrained, compute_fmm_force, InteractionLists, BodiesSoA,
+    build_p2p_lists, build_constrained, compute_fmm_force, InteractionLists, BodiesSoA, BodyTracker,
 };
 use galax_gpu::{GpuConfig, GpuContext};
 use galax_init::{disk, galaxy, plummer, uniform};
@@ -27,6 +27,7 @@ pub struct SimState {
     pub step_count: u64,
     pub n: usize,
     pub preset: String,
+    pub tracker: BodyTracker,
     backend: SimBackend,
 }
 
@@ -129,6 +130,7 @@ impl SimState {
             step_count: 0,
             n,
             preset: preset.to_string(),
+            tracker: BodyTracker::new(2000),
             backend,
         })
     }
@@ -157,6 +159,7 @@ impl SimState {
         }
 
         self.step_count += 1;
+        self.tracker.record(&self.bodies);
         Ok(())
     }
 
@@ -167,6 +170,7 @@ impl SimState {
         self.n = n;
         self.preset = preset.to_string();
         self.step_count = 0;
+        self.tracker = BodyTracker::new(2000);
         Ok(())
     }
 }
@@ -225,6 +229,29 @@ impl SimStateHandle {
             self.inner.step_count,
             elapsed_ms,
             steps_per_sec,
+            Some(&self.inner.tracker),
         )
+    }
+
+    pub fn set_tracked_index(&mut self, index: i32) {
+        if index < 0 {
+            self.inner.tracker.track(None);
+        } else {
+            self.inner.tracker.track(Some(index as usize));
+        }
+    }
+
+    pub fn tracked_body_x(&self) -> f64 {
+        match self.inner.tracker.tracked_index {
+            Some(i) if i < self.inner.n => self.inner.bodies.x[i],
+            _ => f64::NAN,
+        }
+    }
+
+    pub fn tracked_body_y(&self) -> f64 {
+        match self.inner.tracker.tracked_index {
+            Some(i) if i < self.inner.n => self.inner.bodies.y[i],
+            _ => f64::NAN,
+        }
     }
 }

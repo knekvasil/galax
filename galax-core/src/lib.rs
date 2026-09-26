@@ -1720,6 +1720,36 @@ pub fn compute_n2_force(bodies: &mut BodiesSoA, softening: f64) {
     }
 }
 
+/// Tracks position history of a single body for trail rendering.
+pub struct BodyTracker {
+    pub tracked_index: Option<usize>,
+    history: Vec<(f64, f64)>,
+    max_len: usize,
+}
+
+impl BodyTracker {
+    pub fn new(max_len: usize) -> Self {
+        BodyTracker { tracked_index: None, history: Vec::with_capacity(max_len), max_len }
+    }
+
+    pub fn track(&mut self, index: Option<usize>) {
+        self.tracked_index = index;
+        if index.is_none() { self.history.clear(); }
+    }
+
+    pub fn record(&mut self, bodies: &BodiesSoA) {
+        if let Some(idx) = self.tracked_index {
+            if idx < bodies.len() {
+                if self.history.len() >= self.max_len { self.history.remove(0); }
+                self.history.push((bodies.x[idx], bodies.y[idx]));
+            }
+        }
+    }
+
+    pub fn history(&self) -> &[(f64, f64)] { &self.history }
+    pub fn clear_history(&mut self) { self.history.clear(); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
